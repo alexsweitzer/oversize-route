@@ -58,6 +58,14 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), env: process.env.NODE_ENV });
 });
 
+// ─── Public config (injects server-side env vars the frontend needs) ──────────
+app.get('/api/config', (req, res) => {
+  res.json({
+    googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || '',
+    appUrl: process.env.APP_URL || '',
+  });
+});
+
 // ─── Catch-all → serve office portal SPA ─────────────────────────────────────
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../public/index.html'));
