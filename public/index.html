@@ -550,11 +550,12 @@ function renderRouteResults(route, analysis) {
   document.getElementById('shareInput').textContent = window.location.origin + '/drive/' + route.share_token;
   document.getElementById('shareCard').style.display = 'block';
 
-  // Draw on real Google Map using permit waypoints
+  // Build Google Maps waypoints from the AI's permit-required steps
+  // Extract road names from steps that have permit restrictions or are key turns
   const origin = document.getElementById('originAddr').value.trim();
   const dest   = document.getElementById('destAddr').value.trim();
-  const wpts   = document.getElementById('waypointsInput').value.trim().split('\n').filter(Boolean);
-  drawRouteOnMap(origin, dest, wpts);
+  const mapWaypoints = extractMapWaypointsFromSteps(steps, origin, dest);
+  drawRouteOnMap(origin, dest, mapWaypoints);
 }
 
 function renderDemoRoute(origin, dest) {
@@ -668,6 +669,52 @@ function loadGoogleMapsScript(key) {
     s.onerror = () => reject(new Error('Maps script failed to load'));
     document.head.appendChild(s);
   });
+}
+
+// ─── EXTRACT WAYPOINTS FROM AI STEPS FOR GOOGLE MAPS ─────────────────────────
+function extractMapWaypointsFromSteps(steps, origin, dest) {
+  if (!steps || steps.length < 3) return [];
+
+  const waypoints = [];
+  const middle = steps.slice(1, -1); // skip first and last
+
+  // Prioritize steps with permit restrictions — these are the mandatory roads
+  const permitSteps = middle.filter(s => s.note || s.permit);
+  const turnSteps   = middle.filter(s => ['right','left','merge','exit'].includes(s.dir));
+
+  const priority = [...permitSteps];
+  turnSteps.forEach(s => { if (!priority.includes(s)) priority.push(s); });
+  const selected = priority.slice(0, 8); // Google Maps max 8 waypoints
+
+  selected.forEach(s => {
+    // Best case: AI provided a location field
+    if (s.location && s.location.length > 3 && !s.location.includes('[')) {
+      waypoints.push(s.location);
+      return;
+    }
+
+    // Extract road + location from step text
+    const text = (s.text || '').replace(/<[^>]+>/g, '').trim();
+
+    // Try to pull highway number: "onto I-70 W", "on US-50", "via I-595"
+    const roadMatch = text.match(
+      /(?:onto|on|via|toward|along)\s+([A-Z]{1,3}[-\s]?\d+[\w\s\-\/]*?)(?:\s+via|\s+toward|\s+at|\s+\(|,|\band\b|$)/i
+    );
+
+    if (roadMatch) {
+      const road = roadMatch[1].trim();
+      // Try to extract city/state from text like "...through Wheeling, WV"
+      const cityMatch = text.match(/(?:through|in|near|at)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),?\s*([A-Z]{2})/);
+      if (cityMatch) {
+        waypoints.push(`${road} near ${cityMatch[1]}, ${cityMatch[2]}`);
+      } else if (road.length > 2) {
+        waypoints.push(road);
+      }
+    }
+  });
+
+  // Deduplicate
+  return [...new Set(waypoints)];
 }
 
 async function drawRouteOnMap(origin, dest, permitWaypoints) {
