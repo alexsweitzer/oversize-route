@@ -126,6 +126,31 @@
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1c2e1c;color:var(--green);padding:10px 20px;font-size:12px;font-weight:600;display:none;white-space:nowrap;z-index:200;border:1px solid var(--green2);}
   .toast.show{display:block;}
   @media(max-width:900px){.office-layout{grid-template-columns:1fr;}.map-area{min-height:280px;}}
+
+  /* Google Places Autocomplete dropdown dark theme */
+  .pac-container {
+    background:var(--panel) !important;
+    border:1px solid var(--border) !important;
+    border-top:none !important;
+    font-family:'Barlow',sans-serif !important;
+    box-shadow:0 4px 16px rgba(0,0,0,.5) !important;
+  }
+  .pac-item {
+    padding:8px 12px !important;
+    border-top:1px solid var(--border) !important;
+    color:var(--text) !important;
+    font-size:13px !important;
+    cursor:pointer !important;
+  }
+  .pac-item:hover, .pac-item-selected {
+    background:var(--subtle) !important;
+  }
+  .pac-item-query {
+    color:var(--amber) !important;
+    font-size:13px !important;
+  }
+  .pac-matched { color:var(--amber) !important; font-weight:600 !important; }
+  .pac-icon { display:none !important; }
 </style>
 </head>
 <body>
@@ -654,9 +679,53 @@ async function initGoogleMapsEarly(key) {
       disableDefaultUI: true,
       gestureHandling: 'cooperative',
     });
+
+    // Wire up Places Autocomplete on both address inputs
+    initAutocomplete();
   } catch(e) {
     console.warn('Could not initialize Google Maps:', e.message);
   }
+}
+
+function initAutocomplete() {
+  if (!window.google || !window.google.maps || !window.google.maps.places) return;
+
+  const options = {
+    componentRestrictions: { country: ['us', 'ca'] }, // US + Canada
+    fields: ['formatted_address', 'geometry', 'name'],
+    types: ['address', 'establishment'],
+  };
+
+  const originAC = new google.maps.places.Autocomplete(
+    document.getElementById('originAddr'), options
+  );
+  const destAC = new google.maps.places.Autocomplete(
+    document.getElementById('destAddr'), options
+  );
+
+  // When a place is selected, use the full formatted address
+  originAC.addListener('place_changed', () => {
+    const place = originAC.getPlace();
+    if (place.formatted_address) {
+      document.getElementById('originAddr').value = place.formatted_address;
+    }
+    checkReady();
+  });
+
+  destAC.addListener('place_changed', () => {
+    const place = destAC.getPlace();
+    if (place.formatted_address) {
+      document.getElementById('destAddr').value = place.formatted_address;
+    }
+    checkReady();
+  });
+
+  // Prevent form submission on Enter key in autocomplete fields
+  ['originAddr', 'destAddr'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') e.preventDefault();
+    });
+  });
 }
 
 function loadGoogleMapsScript(key) {
@@ -664,7 +733,8 @@ function loadGoogleMapsScript(key) {
     if (window.google && window.google.maps) { resolve(); return; }
     window._mapsReady = resolve;
     const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry&callback=_mapsReady`;
+    // Include 'places' library for address autocomplete
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry,places&callback=_mapsReady`;
     s.async = true; s.defer = true;
     s.onerror = () => reject(new Error('Maps script failed to load'));
     document.head.appendChild(s);
