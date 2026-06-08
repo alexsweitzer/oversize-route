@@ -322,7 +322,7 @@ let activity = [];
       token = ''; localStorage.removeItem('osr_token');
     }
   }
-  loadSavedMapsKey();
+  await fetchConfig();
   // Pre-fill login hint
   document.getElementById('loginEmail').value = 'admin@oversizeroute.app';
 })();
@@ -595,27 +595,31 @@ function renderDemoRoute(origin, dest) {
 }
 
 // ─── GOOGLE MAPS ──────────────────────────────────────────────────────────────
-let gMap = null, gDirections = null, gMapsLoaded = false;
-const MAPS_KEY_STORAGE = 'osr_maps_key';
+let gMap = null, gDirections = null, gMapsKey = '';
+
+async function fetchConfig() {
+  try {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    if (cfg.googleMapsKey) {
+      gMapsKey = cfg.googleMapsKey;
+      document.getElementById('apiKeyBar').style.display = 'none';
+    }
+  } catch(e) {
+    console.warn('Could not fetch server config:', e.message);
+  }
+}
 
 function saveMapsKey() {
   const val = document.getElementById('mapsKeyInput').value.trim();
   if (!val || !val.startsWith('AIza')) { showToast('⚠ Enter a valid Google Maps API key (starts with AIza)'); return; }
-  localStorage.setItem(MAPS_KEY_STORAGE, val);
+  gMapsKey = val;
   document.getElementById('apiKeyBar').style.display = 'none';
-  showToast('✓ Maps key saved');
-}
-
-function loadSavedMapsKey() {
-  const k = localStorage.getItem(MAPS_KEY_STORAGE);
-  if (k) {
-    document.getElementById('mapsKeyInput').value = k;
-    document.getElementById('apiKeyBar').style.display = 'none';
-  }
+  showToast('✓ Maps key set for this session');
 }
 
 function getMapsKey() {
-  return localStorage.getItem(MAPS_KEY_STORAGE) || document.getElementById('mapsKeyInput').value.trim();
+  return gMapsKey || document.getElementById('mapsKeyInput').value.trim();
 }
 
 function loadGoogleMaps(key) {
