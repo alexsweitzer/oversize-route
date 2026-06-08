@@ -77,9 +77,11 @@
 
   /* MAP CENTER */
   .map-area{background:#0d1a0e;position:relative;overflow:hidden;min-height:300px;}
-  #mapboxMap{width:100%;height:100%;position:absolute;inset:0;min-height:100%;}
-  .mapboxgl-canvas{display:block;}
-  .mapboxgl-map{width:100%!important;height:100%!important;}
+  #mapboxMap{position:absolute;inset:0;width:100%;height:100%;}
+  .mapboxgl-canvas-container{width:100%!important;height:100%!important;}
+  .mapboxgl-canvas{width:100%!important;height:100%!important;display:block;}
+  /* Prevent green flash — map background must be dark */
+  .mapboxgl-map{background:#0d1a0e!important;}
   #mapSvg{width:100%;height:100%;}
   .map-info{position:absolute;top:14px;right:14px;background:rgba(8,10,8,.9);border:1px solid var(--border);padding:14px 16px;display:none;}
   .map-info.show{display:block;}
@@ -231,9 +233,9 @@
         <button onclick="saveMapsKey()" style="background:var(--amber);color:var(--black);border:none;padding:6px 14px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;white-space:nowrap;">Save</button>
       </div>
 
-      <div class="map-area" style="flex:1;position:relative;">
+      <div class="map-area" style="flex:1;position:relative;background:#191a1f;">
         <!-- Mapbox Map -->
-        <div id="mapboxMap"></div>
+        <div id="mapboxMap" style="background:#191a1f;"></div>
         <!-- Drag instruction hint -->
         <div id="dragHint" style="display:none;position:absolute;bottom:52px;left:50%;transform:translateX(-50%);background:rgba(8,10,8,.88);border:1px solid var(--amber);padding:7px 16px;font-size:11px;color:var(--amber);white-space:nowrap;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;pointer-events:none;">
           Click route to add point · Drag to reshape · Double-click point to remove
@@ -693,12 +695,19 @@ async function initMapbox(token) {
     mapEl.style.display = 'block';
     document.getElementById('mapSvg').style.display = 'none';
 
+    // Ensure container has pixel dimensions before Mapbox init
+    const mapWrap = mapEl.parentElement;
+    if (mapWrap && mapWrap.offsetHeight < 10) {
+      mapEl.style.height = '400px';
+    }
+
     mbMap = new mapboxgl.Map({
       container: 'mapboxMap',
       style: 'mapbox://styles/mapbox/dark-v11',
       center: [-80.0, 39.5],
       zoom: 5,
       attributionControl: false,
+      fadeDuration: 0,
     });
 
     mbMap.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
@@ -905,17 +914,16 @@ function clearDragPoints() {
 
 // ─── DRAG INTERACTION ─────────────────────────────────────────────────────────
 function setupDragInteraction(token) {
-  // Remove existing listeners to avoid duplicates
   mbMap.off('click', 'permit-route-hit', onRouteClick);
   mbMap.on('click',  'permit-route-hit', onRouteClick);
-
-  // Cursor changes when hovering the route
-  mbMap.on('mouseenter', 'permit-route-hit', () => { mbMap.getCanvas().style.cursor = 'pointer'; });
+  mbMap.on('mouseenter', 'permit-route-hit', () => { mbMap.getCanvas().style.cursor = 'crosshair'; });
   mbMap.on('mouseleave', 'permit-route-hit', () => { mbMap.getCanvas().style.cursor = ''; });
 }
 
 function onRouteClick(e) {
-  // Add a new drag point where the user clicked
+  e.preventDefault();
+  // Stop the click from propagating to the map (which can cause reflows)
+  if (e.originalEvent) e.originalEvent.stopPropagation();
   const lngLat = [e.lngLat.lng, e.lngLat.lat];
   insertDragPoint(lngLat);
 }
