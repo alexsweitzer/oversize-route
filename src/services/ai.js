@@ -82,7 +82,8 @@ Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
       "text": "Depart [full origin address] heading [direction] on [road name]",
       "note": "",
       "dist": 0.4,
-      "permit": ""
+      "permit": "",
+      "location": "[city, state abbreviation where this step occurs — e.g. Wheeling, WV]"
     }
   ],
   "alerts": [
