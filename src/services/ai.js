@@ -1,33 +1,75 @@
 const https = require('https');
+const fs    = require('fs');
+const path  = require('path');
 
 /**
- * Calls the Anthropic API to analyze permit data and generate a
+ * Reads text content from a permit file (PDF or image path).
+ * Falls back gracefully if pdf-parse is unavailable or file is an image.
+ */
+async function extractPermitText(permit) {
+  // If no local file path, just return the filename as context
+  if (!permit.file_url || permit.file_url.startsWith('http')) {
+    return `Permit file: ${permit.file_name} (State: ${permit.state_code}) — file stored remotely, use state routing standards`;
+  }
+
+  const localPath = path.join(__dirname, '../../', permit.file_url);
+  const ext = path.extname(permit.file_name).toLowerCase();
+
+  try {
+    if (ext === '.pdf' && fs.existsSync(localPath)) {
+      const pdfParse = require('pdf-parse');
+      const buffer   = fs.readFileSync(localPath);
+      const data     = await pdfParse(buffer);
+      // Truncate to 2000 chars per permit to stay within token limits
+      const text = data.text.replace(/\s+/g, ' ').trim().slice(0, 2000);
+      return `=== ${permit.state_code} PERMIT: ${permit.file_name} ===\n${text}\n`;
+    }
+  } catch (e) {
+    console.warn(`Could not parse permit PDF ${permit.file_name}:`, e.message);
+  }
+
+  // Image permit or parse failure — return metadata only
+  return `Permit on file: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
+}
+
+/**
+ * Calls the Anthropic API to analyze permit content and generate a
  * permit-compliant turn-by-turn route.
- *
- * @param {Object} route    - Route record from database
- * @param {Array}  permits  - Permit records from database
- * @returns {Object}        - Analysis result with steps, waypoints, alerts
  */
 async function analyzePermitsWithAI(route, permits) {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY not set in environment');
   }
 
-  const permitSummary = permits.map(p =>
-    `- ${p.state_code}: ${p.file_name} (${p.status})`
-  ).join('\n');
+  // Extract text from each permit file
+  let permitContent = '';
+  if (permits.length > 0) {
+    const texts = await Promise.all(permits.map(p => extractPermitText(p)));
+    permitContent = texts.join('\n');
+  } else {
+    permitContent = '(No permits uploaded — use general OSOW routing standards for each state)';
+  }
 
-  const prompt = `You are an oversized load routing expert for a trucking company.
-Analyze this trip and generate a permit-compliant route.
+  const prompt = `You are an oversized load (OSOW) routing expert for a commercial trucking company.
+Your job is to read the actual permit documents provided and generate a route that strictly complies with every restriction listed in those permits.
 
 TRIP DETAILS:
 - Origin: ${route.origin_address}
 - Destination: ${route.dest_address}
-- Load: ${route.load_description || 'Oversized load'} ${route.load_width ? `(${route.load_width} wide)` : ''}
-- Permits on file:
-${permitSummary || '  (no permits uploaded yet — use general oversized routing)'}
+- Load description: ${route.load_description || 'Oversized load'} ${route.load_width ? `(${route.load_width} wide)` : ''}
 
-Return ONLY a JSON object (no markdown, no preamble):
+PERMIT DOCUMENTS:
+${permitContent}
+
+INSTRUCTIONS:
+1. Read every restriction in the permit documents above carefully
+2. Identify mandatory routes, prohibited roads, required detours, escort requirements, time restrictions, and bridge/weight restrictions
+3. Build the route to comply with ALL permit restrictions — do NOT use roads the permits prohibit
+4. If permits specify exact roads to use, use those roads in your steps
+5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, and urban cores)
+6. Include a permit alert for every restriction that affects the driver
+
+Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
 {
   "distance_mi": 487.2,
   "duration_min": 585,
@@ -46,40 +88,36 @@ Return ONLY a JSON object (no markdown, no preamble):
   "alerts": [
     {
       "state": "TX",
-      "message": "Daytime travel only between 7AM and 8PM on TX-225 and US-90 ALT"
+      "message": "Exact restriction from permit document"
     }
   ]
 }
 
-Rules for steps:
-- 8 to 14 steps total
-- dir must be one of: straight, right, left, merge, exit, arrive
-- arrow must be one of: ⬆, →, ←, ↗, ↙, 🏁
-- note = short permit restriction flag (or empty string)
-- permit = full permit restriction sentence (or empty string)
-- dist = miles for this segment as a number
-- Make routes realistic for the actual geography of the origin/destination
-- Include mandatory permit waypoints that differ from normal GPS routing
-- Last step must have dir "arrive" and dist 0`;
+Step rules:
+- 8 to 16 steps depending on route complexity
+- dir: straight | right | left | merge | exit | arrive
+- arrow: ⬆ | → | ← | ↗ | ↙ | 🏁
+- note: brief permit flag shown on the step (empty string if none)
+- permit: full permit restriction sentence shown as an alert (empty string if none)
+- dist: miles as a decimal number
+- Last step MUST have dir "arrive" and dist 0
+- Be specific — use real road names, highway numbers, and exit numbers`;
 
   const body = JSON.stringify({
     model: 'claude-sonnet-4-5',
-    max_tokens: 2000,
+    max_tokens: 3000,
     messages: [{ role: 'user', content: prompt }],
   });
 
   const responseText = await makeAnthropicRequest(body);
-
-  // Parse the JSON from Claude's response
   const clean = responseText.replace(/```json|```/g, '').trim();
   const analysis = JSON.parse(clean);
 
-  // Validate required fields
   if (!analysis.steps || !Array.isArray(analysis.steps)) {
     throw new Error('AI returned invalid steps array');
   }
 
-  // Build waypoints array from steps (lat/lng will be null — Google Maps fills these in on the frontend)
+  // Waypoints start as null — Google Maps resolves them on the frontend
   analysis.waypoints = analysis.steps.map(() => ({ lat: null, lng: null }));
 
   return analysis;
@@ -118,7 +156,7 @@ function makeAnthropicRequest(body) {
     });
 
     req.on('error', reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
+    req.setTimeout(45000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
     req.write(body);
     req.end();
   });
