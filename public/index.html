@@ -326,6 +326,12 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ─── SUPPRESS GOOGLE MAPS ERROR POPUP ────────────────────────────────────────
+// Must be defined before Maps script loads to catch auth errors silently
+window.gm_authFailure = () => {
+  console.warn('Google Maps: auth failure — autocomplete may be unavailable');
+};
+
 // ─── CONFIG ──────────────────────────────────────────────────────────────────
 const API = ''; // Empty = same origin (Railway serves both frontend and backend)
 
@@ -688,55 +694,70 @@ async function initGoogleMapsEarly(key) {
 }
 
 function initAutocomplete() {
-  if (!window.google || !window.google.maps || !window.google.maps.places) return;
+  if (!window.google || !window.google.maps || !window.google.maps.places) {
+    console.warn('Places API not available — autocomplete disabled');
+    return;
+  }
 
-  const options = {
-    componentRestrictions: { country: ['us', 'ca'] }, // US + Canada
-    fields: ['formatted_address', 'geometry', 'name'],
-    types: ['address', 'establishment'],
-  };
+  try {
+    const options = {
+      componentRestrictions: { country: ['us', 'ca'] },
+      fields: ['formatted_address', 'geometry', 'name'],
+      types: ['address', 'establishment'],
+    };
 
-  const originAC = new google.maps.places.Autocomplete(
-    document.getElementById('originAddr'), options
-  );
-  const destAC = new google.maps.places.Autocomplete(
-    document.getElementById('destAddr'), options
-  );
+    const originAC = new google.maps.places.Autocomplete(
+      document.getElementById('originAddr'), options
+    );
+    const destAC = new google.maps.places.Autocomplete(
+      document.getElementById('destAddr'), options
+    );
 
-  // When a place is selected, use the full formatted address
-  originAC.addListener('place_changed', () => {
-    const place = originAC.getPlace();
-    if (place.formatted_address) {
-      document.getElementById('originAddr').value = place.formatted_address;
-    }
-    checkReady();
-  });
-
-  destAC.addListener('place_changed', () => {
-    const place = destAC.getPlace();
-    if (place.formatted_address) {
-      document.getElementById('destAddr').value = place.formatted_address;
-    }
-    checkReady();
-  });
-
-  // Prevent form submission on Enter key in autocomplete fields
-  ['originAddr', 'destAddr'].forEach(id => {
-    document.getElementById(id).addEventListener('keydown', e => {
-      if (e.key === 'Enter') e.preventDefault();
+    originAC.addListener('place_changed', () => {
+      const place = originAC.getPlace();
+      if (place.formatted_address) {
+        document.getElementById('originAddr').value = place.formatted_address;
+      }
+      checkReady();
     });
-  });
+
+    destAC.addListener('place_changed', () => {
+      const place = destAC.getPlace();
+      if (place.formatted_address) {
+        document.getElementById('destAddr').value = place.formatted_address;
+      }
+      checkReady();
+    });
+
+    ['originAddr', 'destAddr'].forEach(id => {
+      document.getElementById(id).addEventListener('keydown', e => {
+        if (e.key === 'Enter') e.preventDefault();
+      });
+    });
+  } catch(e) {
+    console.warn('Autocomplete init failed:', e.message);
+  }
 }
 
 function loadGoogleMapsScript(key) {
   return new Promise((resolve, reject) => {
     if (window.google && window.google.maps) { resolve(); return; }
+
+    // Suppress the error popup — handle auth failures ourselves
+    window.gm_authFailure = () => {
+      console.warn('Google Maps auth failed — Places autocomplete disabled');
+      // Don't reject — let the map still work without autocomplete
+      resolve();
+    };
+
     window._mapsReady = resolve;
     const s = document.createElement('script');
-    // Include 'places' library for address autocomplete
     s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry,places&callback=_mapsReady`;
-    s.async = true; s.defer = true;
-    s.onerror = () => reject(new Error('Maps script failed to load'));
+    s.async = true;
+    s.onerror = () => {
+      console.warn('Maps script failed to load');
+      reject(new Error('Maps script failed'));
+    };
     document.head.appendChild(s);
   });
 }
