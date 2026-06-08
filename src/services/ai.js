@@ -68,7 +68,7 @@ INSTRUCTIONS:
 4. If permits specify exact roads to use, use those exact roads
 5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, urban cores)
 6. Include a permit alert for every restriction that affects the driver
-7. The map_waypoints array is CRITICAL — list 4-10 specific intermediate locations along the EXACT permit-required route. Format each as "City, State" (e.g. "Wheeling, WV") or a specific intersection (e.g. "I-70 & I-79, Washington, PA"). These are passed directly to Mapbox routing to draw the precise permitted corridor — be accurate to the actual required roads.
+7. The map_waypoints array is CRITICAL — list 4-8 specific cities along the EXACT permit-required route corridor in order from origin to destination. These must be geographically sensible — waypoints must progress logically toward the destination without backtracking or detouring. Format as "City, State" only (e.g. "Hagerstown, MD"). IMPORTANT: A permit for a state does not mean routing through the interior of that state — I-70 briefly crosses WV for only a few miles; do NOT add WV cities as waypoints unless the route genuinely travels deep into WV. Think about the actual highway geometry.
 
 Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
 {
