@@ -581,11 +581,11 @@ function renderRouteResults(route, analysis) {
   document.getElementById('shareInput').textContent = window.location.origin + '/drive/' + route.share_token;
   document.getElementById('shareCard').style.display = 'block';
 
-  // Build Google Maps waypoints from the AI's permit-required steps
-  // Extract road names from steps that have permit restrictions or are key turns
+  // Use the AI's map_waypoints directly — these are the permit-required intermediate points
+  // that force Google Maps to follow the correct roads
   const origin = document.getElementById('originAddr').value.trim();
   const dest   = document.getElementById('destAddr').value.trim();
-  const mapWaypoints = extractMapWaypointsFromSteps(steps, origin, dest);
+  const mapWaypoints = analysis?.map_waypoints || route.ai_analysis?.map_waypoints || extractMapWaypointsFromSteps(steps, origin, dest);
   drawRouteOnMap(origin, dest, mapWaypoints);
 }
 
@@ -885,7 +885,7 @@ async function drawRouteOnMap(origin, dest, permitWaypoints) {
     const wpts = permitWaypoints
       .filter(w => w.trim())
       .slice(0, 8)
-      .map(w => ({ location: w.trim(), stopover: false }));
+      .map(w => ({ location: w.trim(), stopover: true })); // force route through permit-required points
 
     let { result, status } = await tryRoute(wpts);
 
