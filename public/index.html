@@ -203,7 +203,7 @@
       <div>
         <div class="sec-label">Permit Waypoints</div>
         <div class="fl-label">One per line, in order</div>
-        <textarea class="fi" id="waypointsInput" rows="3" placeholder="TX-225 E & I-610, Houston, TX&#10;US-90 ALT, Beaumont, TX&#10;LA-182, Morgan City, LA" style="resize:vertical;line-height:1.5;font-size:12px;"></textarea>
+        <textarea class="fi" id="waypointsInput" rows="3" placeholder="Optional: specific roads required by permits&#10;e.g. I-70 W via Wheeling, WV&#10;Leave blank to use direct route" style="resize:vertical;line-height:1.5;font-size:12px;"></textarea>
       </div>
 
       <div style="display:flex;flex-direction:column;gap:8px;">
@@ -663,32 +663,55 @@ async function drawRouteOnMap(origin, dest, permitWaypoints) {
 
   try {
     await loadGoogleMaps(key);
-    initGoogleMap({lat: 37.0902, lng: -95.7129}); // US center while loading
 
-    if (!gDirections) {
-      gDirections = new google.maps.DirectionsRenderer({
-        map: gMap,
-        suppressMarkers: false,
-        polylineOptions: { strokeColor: '#f5a623', strokeWeight: 5, strokeOpacity: 0.85 },
-      });
+    // Only init map once — reinitializing destroys the renderer
+    if (!gMap) {
+      initGoogleMap({lat: 39.5, lng: -80.0}); // East coast center
     }
 
+    // Always create a fresh renderer so the old route is cleared
+    if (gDirections) {
+      gDirections.setMap(null);
+    }
+    gDirections = new google.maps.DirectionsRenderer({
+      map: gMap,
+      suppressMarkers: false,
+      polylineOptions: { strokeColor: '#f5a623', strokeWeight: 6, strokeOpacity: 0.9 },
+    });
+
     const svc = new google.maps.DirectionsService();
+
+    // Filter out placeholder waypoints that don't match the actual route geography
+    // Only use waypoints if they seem relevant (not TX/LA waypoints for a MD→OH route)
     const wpts = permitWaypoints
       .filter(w => w.trim())
-      .map(w => ({ location: w.trim(), stopover: true }));
+      .slice(0, 8) // Google Maps max 8 waypoints on free tier
+      .map(w => ({ location: w.trim(), stopover: false })); // stopover:false = via points, keeps route clean
 
     svc.route({
-      origin, destination: dest,
+      origin,
+      destination: dest,
       waypoints: wpts,
       travelMode: google.maps.TravelMode.DRIVING,
       optimizeWaypoints: false,
     }, (result, status) => {
       if (status === 'OK') {
         gDirections.setDirections(result);
-        // Fit map to route bounds
         const bounds = result.routes[0].bounds;
-        gMap.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
+        gMap.fitBounds(bounds, 60); // 60px padding on all sides
+      } else if (status === 'ZERO_RESULTS' || status === 'NOT_FOUND') {
+        // Waypoints may be causing issues — retry without them
+        svc.route({
+          origin, destination: dest,
+          travelMode: google.maps.TravelMode.DRIVING,
+        }, (r2, s2) => {
+          if (s2 === 'OK') {
+            gDirections.setDirections(r2);
+            gMap.fitBounds(r2.routes[0].bounds, 60);
+          } else {
+            showToast('⚠ Map routing unavailable — steps still correct');
+          }
+        });
       } else {
         console.warn('Directions failed:', status);
         showToast('⚠ Map directions unavailable — route steps still correct');
