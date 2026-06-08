@@ -65,15 +65,22 @@ INSTRUCTIONS:
 1. Read every restriction in the permit documents above carefully
 2. Identify mandatory routes, prohibited roads, required detours, escort requirements, time restrictions, and bridge/weight restrictions
 3. Build the route to comply with ALL permit restrictions — do NOT use roads the permits prohibit
-4. If permits specify exact roads to use, use those roads in your steps
-5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, and urban cores)
+4. If permits specify exact roads to use, use those exact roads
+5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, urban cores)
 6. Include a permit alert for every restriction that affects the driver
+7. The map_waypoints array is CRITICAL — it must list specific intermediate locations along the permit-required route so Google Maps draws the correct path. Include 3-8 waypoints as "City, State" or "Road Name near City, State". These must force Google Maps to follow the permit-required roads, not the fastest route.
 
 Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
 {
   "distance_mi": 487.2,
   "duration_min": 585,
-  "states": ["TX", "LA"],
+  "states": ["MD", "WV", "PA", "OH"],
+  "map_waypoints": [
+    "Hagerstown, MD",
+    "Morgantown, WV",
+    "Wheeling, WV",
+    "St. Clairsville, OH"
+  ],
   "steps": [
     {
       "icon": "🚦",
@@ -83,12 +90,12 @@ Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
       "note": "",
       "dist": 0.4,
       "permit": "",
-      "location": "[city, state abbreviation where this step occurs — e.g. Wheeling, WV]"
+      "location": "Stevensville, MD"
     }
   ],
   "alerts": [
     {
-      "state": "TX",
+      "state": "MD",
       "message": "Exact restriction from permit document"
     }
   ]
@@ -99,9 +106,11 @@ Step rules:
 - dir: straight | right | left | merge | exit | arrive
 - arrow: ⬆ | → | ← | ↗ | ↙ | 🏁
 - note: brief permit flag shown on the step (empty string if none)
-- permit: full permit restriction sentence shown as an alert (empty string if none)
+- permit: full permit restriction sentence (empty string if none)
+- location: city and state where this step occurs (e.g. "Wheeling, WV")
 - dist: miles as a decimal number
 - Last step MUST have dir "arrive" and dist 0
+- map_waypoints MUST reflect the actual permit-required route — if permits require I-70 through Wheeling WV, include "Wheeling, WV" as a waypoint
 - Be specific — use real road names, highway numbers, and exit numbers`;
 
   const body = JSON.stringify({
