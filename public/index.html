@@ -232,6 +232,13 @@
       <div class="map-area" style="flex:1;position:relative;">
         <!-- Mapbox Map -->
         <div id="mapboxMap"></div>
+        <!-- Drag instruction hint -->
+        <div id="dragHint" style="display:none;position:absolute;bottom:52px;left:50%;transform:translateX(-50%);background:rgba(8,10,8,.88);border:1px solid var(--amber);padding:7px 16px;font-size:11px;color:var(--amber);white-space:nowrap;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;pointer-events:none;">
+          Click route to add point · Drag to reshape · Double-click point to remove
+        </div>
+        <div id="clearDragBtn" style="display:none;position:absolute;bottom:52px;right:12px;background:var(--panel);border:1px solid var(--border);color:var(--muted);padding:6px 12px;font-size:11px;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;" onclick="clearDragPoints()">
+          ✕ Clear Edits
+        </div>
         <!-- Fallback SVG (shown when no API key) -->
         <svg id="mapSvg" viewBox="0 0 680 400" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;">
           <defs>
@@ -766,105 +773,237 @@ function attachMapboxAutocomplete(inputId) {
 }
 
 // ─── DRAW ROUTE ON MAPBOX ─────────────────────────────────────────────────────
+// ─── ROUTE STATE ──────────────────────────────────────────────────────────────
+let routeOriginCoords  = null;  // [lng, lat]
+let routeDestCoords    = null;  // [lng, lat]
+let routeDragPoints    = [];    // [[lng,lat], ...] user-added drag waypoints
+let routeMarkers       = [];    // mapboxgl.Marker instances for drag handles
+let isDragging         = false;
+let dragMarkerIdx      = -1;
+
 async function drawRouteOnMap(origin, dest, permitWaypoints) {
   const token = getMapsKey();
   if (!token) { drawSvgRoute(); return; }
 
   if (!mbMap) {
     await initMapbox(token);
-    await new Promise(r => mbMap.on('load', r));
+    await new Promise(r => { if (mbMap._loaded) r(); else mbMap.on('load', r); });
   }
 
   try {
-    // Geocode origin and destination to coordinates
-    const [originCoords, destCoords] = await Promise.all([
+    showToast('📍 Geocoding addresses…');
+
+    const [oCoords, dCoords] = await Promise.all([
       geocode(origin, token),
       geocode(dest, token),
     ]);
 
-    if (!originCoords || !destCoords) {
-      showToast('⚠ Could not geocode addresses');
-      return;
+    if (!oCoords || !dCoords) { showToast('⚠ Could not geocode addresses'); return; }
+
+    routeOriginCoords = oCoords;
+    routeDestCoords   = dCoords;
+
+    // Geocode AI permit waypoints as initial drag points
+    routeDragPoints = [];
+    for (const wp of permitWaypoints.filter(w => w.trim()).slice(0, 20)) {
+      const c = await geocode(wp, token);
+      if (c) routeDragPoints.push(c);
     }
 
-    // Geocode permit waypoints to coordinates
-    const waypointCoords = [];
-    for (const wp of permitWaypoints.filter(w => w.trim()).slice(0, 24)) {
-      const coords = await geocode(wp, token);
-      if (coords) waypointCoords.push(coords);
-    }
+    await renderRoute(token);
+    setupDragInteraction(token);
 
-    // Build Mapbox Directions URL with all coordinates
-    // Using Map Matching approach: pass all points as coordinates
-    const allCoords = [originCoords, ...waypointCoords, destCoords];
-    const coordStr  = allCoords.map(c => c.join(',')).join(';');
+    showToast('✅ Route drawn — click & drag the line to reshape');
+  } catch(e) {
+    console.warn('Route error:', e.message);
+    showToast('⚠ Routing error: ' + e.message);
+  }
+}
 
-    // Use Mapbox Directions API with full coordinate list
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
-      `access_token=${token}&geometries=geojson&overview=full&steps=true`;
+// ─── RENDER ROUTE (called on init and after every drag) ───────────────────────
+async function renderRoute(token) {
+  const t = token || getMapsKey();
+  const allCoords = [routeOriginCoords, ...routeDragPoints, routeDestCoords];
+  const coordStr  = allCoords.map(c => c.join(',')).join(';');
 
-    const res  = await fetch(url);
-    const data = await res.json();
+  const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
+    `access_token=${t}&geometries=geojson&overview=full&steps=false`;
 
-    if (!data.routes || !data.routes.length) {
-      showToast('⚠ Mapbox routing failed — check waypoints');
-      return;
-    }
+  const res  = await fetch(url);
+  const data = await res.json();
 
-    const route    = data.routes[0];
-    const geometry = route.geometry; // GeoJSON LineString
+  if (!data.routes || !data.routes.length) {
+    showToast('⚠ Routing failed — try moving the drag point');
+    return;
+  }
 
-    // Remove existing route layers if present
-    ['permit-route-line','permit-route-casing','permit-route-arrows'].forEach(id => {
-      if (mbMap.getLayer(id)) mbMap.removeLayer(id);
-    });
-    if (mbMap.getSource('permit-route')) mbMap.removeSource('permit-route');
+  const geometry = data.routes[0].geometry;
 
-    // Add route source
+  // Update or create route layers
+  if (mbMap.getSource('permit-route')) {
+    mbMap.getSource('permit-route').setData({ type: 'Feature', geometry });
+  } else {
     mbMap.addSource('permit-route', { type: 'geojson', data: { type: 'Feature', geometry } });
 
-    // Outer glow/casing
+    // Glow casing
     mbMap.addLayer({
-      id: 'permit-route-casing',
-      type: 'line',
-      source: 'permit-route',
+      id: 'permit-route-casing', type: 'line', source: 'permit-route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#b87a18', 'line-width': 10, 'line-opacity': 0.4 },
+      paint: { 'line-color': '#b87a18', 'line-width': 14, 'line-opacity': 0.35 },
     });
 
-    // Main route line — amber
+    // Clickable hit area (wide transparent line for easier clicking)
     mbMap.addLayer({
-      id: 'permit-route-line',
-      type: 'line',
-      source: 'permit-route',
+      id: 'permit-route-hit', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 20, 'line-opacity': 0 },
+    });
+
+    // Main amber line
+    mbMap.addLayer({
+      id: 'permit-route-line', type: 'line', source: 'permit-route',
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: { 'line-color': '#f5a623', 'line-width': 5, 'line-opacity': 0.95 },
     });
+  }
 
-    // Add start/end markers
-    ['permit-start','permit-end'].forEach(id => {
-      const existing = document.getElementById(id);
-      if (existing) existing.remove();
+  // Fit bounds on first render only
+  if (!mbMap.getLayer('permit-route-line') || routeDragPoints.length === 0) {
+    const coords = geometry.coordinates;
+    const bounds = coords.reduce((b,c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+    mbMap.fitBounds(bounds, { padding: 70, duration: 800 });
+  }
+
+  // Show drag hint and clear button
+  const hint = document.getElementById('dragHint');
+  const clearBtn = document.getElementById('clearDragBtn');
+  if (hint) hint.style.display = 'block';
+  if (clearBtn) clearBtn.style.display = routeDragPoints.length > 0 ? 'block' : 'none';
+
+  // Place origin/destination markers
+  placeEndpointMarkers();
+
+  // Refresh drag handle markers
+  refreshDragHandles();
+}
+
+function clearDragPoints() {
+  routeDragPoints = [];
+  routeMarkers.forEach(m => m.remove());
+  routeMarkers = [];
+  document.getElementById('clearDragBtn').style.display = 'none';
+  renderRoute(getMapsKey());
+  showToast('Drag edits cleared — showing original route');
+}
+
+// ─── DRAG INTERACTION ─────────────────────────────────────────────────────────
+function setupDragInteraction(token) {
+  // Remove existing listeners to avoid duplicates
+  mbMap.off('click', 'permit-route-hit', onRouteClick);
+  mbMap.on('click',  'permit-route-hit', onRouteClick);
+
+  // Cursor changes when hovering the route
+  mbMap.on('mouseenter', 'permit-route-hit', () => { mbMap.getCanvas().style.cursor = 'pointer'; });
+  mbMap.on('mouseleave', 'permit-route-hit', () => { mbMap.getCanvas().style.cursor = ''; });
+}
+
+function onRouteClick(e) {
+  // Add a new drag point where the user clicked
+  const lngLat = [e.lngLat.lng, e.lngLat.lat];
+  insertDragPoint(lngLat);
+}
+
+function insertDragPoint(lngLat) {
+  // Insert at the best position along the current route
+  // Simple approach: find nearest segment and insert there
+  if (routeDragPoints.length === 0) {
+    routeDragPoints.push(lngLat);
+  } else {
+    // Insert before the closest existing drag point
+    let minDist = Infinity, insertIdx = routeDragPoints.length;
+    routeDragPoints.forEach((pt, i) => {
+      const d = dist2(lngLat, pt);
+      if (d < minDist) { minDist = d; insertIdx = i; }
+    });
+    // Insert near the closest point
+    routeDragPoints.splice(insertIdx, 0, lngLat);
+  }
+
+  const token = getMapsKey();
+  renderRoute(token);
+}
+
+function dist2(a, b) {
+  return (a[0]-b[0])**2 + (a[1]-b[1])**2;
+}
+
+function refreshDragHandles() {
+  // Remove old handles
+  routeMarkers.forEach(m => m.remove());
+  routeMarkers = [];
+
+  // Create a draggable handle for each drag point
+  routeDragPoints.forEach((coords, idx) => {
+    const el = document.createElement('div');
+    el.style.cssText = `
+      width:16px; height:16px; border-radius:50%;
+      background:#f5a623; border:2.5px solid #fff;
+      cursor:grab; box-shadow:0 2px 8px rgba(0,0,0,.5);
+      transition:transform .1s;
+    `;
+    el.title = 'Drag to reshape route • Double-click to remove';
+
+    el.addEventListener('mouseenter', () => { el.style.transform = 'scale(1.4)'; });
+    el.addEventListener('mouseleave', () => { el.style.transform = 'scale(1)'; });
+
+    // Double-click removes this drag point
+    el.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      routeDragPoints.splice(idx, 1);
+      renderRoute(getMapsKey());
     });
 
-    addMarker(originCoords, '#f5a623', 'A', 'permit-start');
-    addMarker(destCoords,   '#3ddc84', 'B', 'permit-end');
+    const marker = new mapboxgl.Marker({
+      element: el,
+      draggable: true,
+    })
+    .setLngLat(coords)
+    .addTo(mbMap);
 
-    // Fit map to route
-    const coords = geometry.coordinates;
-    const bounds = coords.reduce((b, c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
-    mbMap.fitBounds(bounds, { padding: 60, duration: 1000 });
+    // Update coords while dragging
+    marker.on('drag', () => {
+      const pos = marker.getLngLat();
+      routeDragPoints[idx] = [pos.lng, pos.lat];
+      // Live update route source while dragging
+      if (mbMap.getSource('permit-route')) {
+        // Lightweight update — just move the marker visually, reroute on dragend
+      }
+    });
 
-  } catch(e) {
-    console.warn('Mapbox routing error:', e.message);
-    showToast('⚠ Map routing error: ' + e.message);
-  }
+    // Reroute when drag finishes
+    marker.on('dragend', () => {
+      const pos = marker.getLngLat();
+      routeDragPoints[idx] = [pos.lng, pos.lat];
+      renderRoute(getMapsKey());
+    });
+
+    routeMarkers.push(marker);
+  });
+}
+
+function placeEndpointMarkers() {
+  ['permit-start','permit-end'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.parentElement?.remove(); // remove marker wrapper
+  });
+  if (routeOriginCoords) addMarker(routeOriginCoords, '#f5a623', 'A', 'permit-start');
+  if (routeDestCoords)   addMarker(routeDestCoords,   '#3ddc84', 'B', 'permit-end');
 }
 
 function addMarker(coords, color, label, id) {
   const el = document.createElement('div');
   el.id = id;
-  el.style.cssText = `width:28px;height:28px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;cursor:pointer;`;
+  el.style.cssText = `width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);`;
   const txt = document.createElement('span');
   txt.style.cssText = 'transform:rotate(45deg);color:#000;font-weight:800;font-size:11px;font-family:Barlow Condensed,sans-serif;';
   txt.textContent = label;
@@ -876,7 +1015,7 @@ async function geocode(address, token) {
   try {
     const res  = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&country=US,CA&limit=1`);
     const data = await res.json();
-    if (data.features && data.features.length) return data.features[0].center; // [lng, lat]
+    if (data.features && data.features.length) return data.features[0].center;
   } catch(e) {}
   return null;
 }
