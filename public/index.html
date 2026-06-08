@@ -604,6 +604,8 @@ async function fetchConfig() {
     if (cfg.googleMapsKey) {
       gMapsKey = cfg.googleMapsKey;
       document.getElementById('apiKeyBar').style.display = 'none';
+      // Load Google Maps immediately on boot so it's ready when needed
+      await initGoogleMapsEarly(gMapsKey);
     }
   } catch(e) {
     console.warn('Could not fetch server config:', e.message);
@@ -615,45 +617,56 @@ function saveMapsKey() {
   if (!val || !val.startsWith('AIza')) { showToast('⚠ Enter a valid Google Maps API key (starts with AIza)'); return; }
   gMapsKey = val;
   document.getElementById('apiKeyBar').style.display = 'none';
-  showToast('✓ Maps key set for this session');
+  initGoogleMapsEarly(gMapsKey);
+  showToast('✓ Maps key set');
 }
 
 function getMapsKey() {
   return gMapsKey || document.getElementById('mapsKeyInput').value.trim();
 }
 
-function loadGoogleMaps(key) {
+// Load the Maps JS library and initialize the map div early
+async function initGoogleMapsEarly(key) {
+  try {
+    await loadGoogleMapsScript(key);
+    const mapEl = document.getElementById('googleMap');
+    mapEl.style.display = 'block';
+    document.getElementById('mapSvg').style.display = 'none';
+
+    const mapStyles = [
+      {elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
+      {elementType:'labels.text.fill',stylers:[{color:'#6b7d6e'}]},
+      {elementType:'labels.text.stroke',stylers:[{color:'#0a120a'}]},
+      {featureType:'road',elementType:'geometry',stylers:[{color:'#1e3a22'}]},
+      {featureType:'road.highway',elementType:'geometry',stylers:[{color:'#2a5030'}]},
+      {featureType:'road',elementType:'labels.text.fill',stylers:[{color:'#7a9a7d'}]},
+      {featureType:'water',elementType:'geometry',stylers:[{color:'#071a0a'}]},
+      {featureType:'poi',stylers:[{visibility:'off'}]},
+      {featureType:'transit',stylers:[{visibility:'off'}]},
+      {featureType:'landscape',elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
+    ];
+
+    gMap = new google.maps.Map(mapEl, {
+      center: {lat: 39.5, lng: -80.0},
+      zoom: 6,
+      styles: mapStyles,
+      disableDefaultUI: true,
+      gestureHandling: 'cooperative',
+    });
+  } catch(e) {
+    console.warn('Could not initialize Google Maps:', e.message);
+  }
+}
+
+function loadGoogleMapsScript(key) {
   return new Promise((resolve, reject) => {
     if (window.google && window.google.maps) { resolve(); return; }
-    window._mapsReady = () => { gMapsLoaded = true; resolve(); };
+    window._mapsReady = resolve;
     const s = document.createElement('script');
     s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry&callback=_mapsReady`;
     s.async = true; s.defer = true;
-    s.onerror = () => reject(new Error('Maps failed — check API key'));
+    s.onerror = () => reject(new Error('Maps script failed to load'));
     document.head.appendChild(s);
-  });
-}
-
-function initGoogleMap(center) {
-  const mapStyles = [
-    {elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
-    {elementType:'labels.text.fill',stylers:[{color:'#6b7d6e'}]},
-    {elementType:'labels.text.stroke',stylers:[{color:'#0a120a'}]},
-    {featureType:'road',elementType:'geometry',stylers:[{color:'#1e3a22'}]},
-    {featureType:'road.highway',elementType:'geometry',stylers:[{color:'#2a5030'}]},
-    {featureType:'road',elementType:'labels.text.fill',stylers:[{color:'#7a9a7d'}]},
-    {featureType:'water',elementType:'geometry',stylers:[{color:'#071a0a'}]},
-    {featureType:'poi',stylers:[{visibility:'off'}]},
-    {featureType:'transit',stylers:[{visibility:'off'}]},
-    {featureType:'landscape',elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
-  ];
-  document.getElementById('googleMap').style.display = 'block';
-  document.getElementById('mapSvg').style.display = 'none';
-  gMap = new google.maps.Map(document.getElementById('googleMap'), {
-    center, zoom: 7,
-    styles: mapStyles,
-    disableDefaultUI: true,
-    gestureHandling: 'cooperative',
   });
 }
 
@@ -662,62 +675,72 @@ async function drawRouteOnMap(origin, dest, permitWaypoints) {
   if (!key) { drawSvgRoute(); return; }
 
   try {
-    await loadGoogleMaps(key);
-
-    // Only init map once — reinitializing destroys the renderer
+    // Ensure maps is loaded and map is initialized
+    if (!window.google || !window.google.maps) {
+      await initGoogleMapsEarly(key);
+    }
     if (!gMap) {
-      initGoogleMap({lat: 39.5, lng: -80.0}); // East coast center
+      await initGoogleMapsEarly(key);
     }
 
-    // Always create a fresh renderer so the old route is cleared
+    // Small delay to ensure map container is rendered and sized
+    await new Promise(r => setTimeout(r, 200));
+    google.maps.event.trigger(gMap, 'resize');
+
+    // Clear any existing route
     if (gDirections) {
       gDirections.setMap(null);
+      gDirections = null;
     }
+
     gDirections = new google.maps.DirectionsRenderer({
       map: gMap,
       suppressMarkers: false,
-      polylineOptions: { strokeColor: '#f5a623', strokeWeight: 6, strokeOpacity: 0.9 },
+      polylineOptions: {
+        strokeColor: '#f5a623',
+        strokeWeight: 6,
+        strokeOpacity: 0.9,
+      },
     });
 
     const svc = new google.maps.DirectionsService();
 
-    // Filter out placeholder waypoints that don't match the actual route geography
-    // Only use waypoints if they seem relevant (not TX/LA waypoints for a MD→OH route)
+    // Try route with waypoints first, fall back to direct if it fails
+    const tryRoute = (wpts) => new Promise((resolve) => {
+      svc.route({
+        origin,
+        destination: dest,
+        waypoints: wpts,
+        travelMode: google.maps.TravelMode.DRIVING,
+        optimizeWaypoints: false,
+      }, (result, status) => resolve({ result, status }));
+    });
+
     const wpts = permitWaypoints
       .filter(w => w.trim())
-      .slice(0, 8) // Google Maps max 8 waypoints on free tier
-      .map(w => ({ location: w.trim(), stopover: false })); // stopover:false = via points, keeps route clean
+      .slice(0, 8)
+      .map(w => ({ location: w.trim(), stopover: false }));
 
-    svc.route({
-      origin,
-      destination: dest,
-      waypoints: wpts,
-      travelMode: google.maps.TravelMode.DRIVING,
-      optimizeWaypoints: false,
-    }, (result, status) => {
-      if (status === 'OK') {
-        gDirections.setDirections(result);
-        const bounds = result.routes[0].bounds;
-        gMap.fitBounds(bounds, 60); // 60px padding on all sides
-      } else if (status === 'ZERO_RESULTS' || status === 'NOT_FOUND') {
-        // Waypoints may be causing issues — retry without them
-        svc.route({
-          origin, destination: dest,
-          travelMode: google.maps.TravelMode.DRIVING,
-        }, (r2, s2) => {
-          if (s2 === 'OK') {
-            gDirections.setDirections(r2);
-            gMap.fitBounds(r2.routes[0].bounds, 60);
-          } else {
-            showToast('⚠ Map routing unavailable — steps still correct');
-          }
-        });
-      } else {
-        console.warn('Directions failed:', status);
-        showToast('⚠ Map directions unavailable — route steps still correct');
-      }
-    });
+    let { result, status } = await tryRoute(wpts);
+
+    // If waypoints caused an error, retry without them
+    if (status !== 'OK' && wpts.length > 0) {
+      console.warn('Route with waypoints failed:', status, '— retrying direct');
+      ({ result, status } = await tryRoute([]));
+    }
+
+    if (status === 'OK') {
+      gDirections.setDirections(result);
+      gMap.fitBounds(result.routes[0].bounds, 60);
+    } else {
+      console.warn('Directions API failed:', status);
+      showToast('⚠ Map route unavailable (' + status + ') — turn-by-turn steps still correct');
+    }
+
   } catch(e) {
+    console.warn('Google Maps error:', e.message);
+    drawSvgRoute();
+  }
     console.warn('Google Maps error:', e.message);
     drawSvgRoute();
   }
