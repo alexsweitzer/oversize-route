@@ -201,9 +201,12 @@
       </div>
 
       <div>
-        <div class="sec-label">Permit Waypoints</div>
-        <div class="fl-label">One per line, in order</div>
-        <textarea class="fi" id="waypointsInput" rows="3" placeholder="Optional: specific roads required by permits&#10;e.g. I-70 W via Wheeling, WV&#10;Leave blank to use direct route" style="resize:vertical;line-height:1.5;font-size:12px;"></textarea>
+        <div class="sec-label">Map Route Waypoints</div>
+        <div class="fl-label" style="margin-bottom:6px;line-height:1.6;">AI fills these from permits. Edit to match the actual required corridor, then click Redraw. One city per line in route order.</div>
+        <textarea class="fi" id="waypointsInput" rows="5" placeholder="AI will populate these after analysis&#10;e.g:&#10;Annapolis, MD&#10;Hagerstown, MD&#10;Breezewood, PA&#10;Pittsburgh, PA" style="resize:vertical;line-height:1.6;font-size:12px;"></textarea>
+        <button class="ghost-btn" id="redrawMapBtn" onclick="redrawFromWaypoints()" style="margin-top:6px;">
+          🗺 Redraw Map with These Waypoints
+        </button>
       </div>
 
       <div style="display:flex;flex-direction:column;gap:8px;">
@@ -571,26 +574,17 @@ function renderRouteResults(route, analysis) {
   drawRouteOnMap(origin, dest, aiWaypoints);
 }
 
+function redrawFromWaypoints() {
+  const origin = document.getElementById('originAddr').value.trim();
+  const dest   = document.getElementById('destAddr').value.trim();
+  if (!origin || !dest) { showToast('Enter origin and destination first'); return; }
+  const wpts = document.getElementById('waypointsInput').value.trim().split('\n').filter(Boolean);
+  drawRouteOnMap(origin, dest, wpts);
+  showToast('Redrawing map…');
+}
+
 function showRedrawBtn(show) {
-  let btn = document.getElementById('redrawMapBtn');
-  if (!btn && show) {
-    btn = document.createElement('button');
-    btn.id = 'redrawMapBtn';
-    btn.className = 'ghost-btn';
-    btn.style.marginTop = '6px';
-    btn.innerHTML = '🗺 Redraw Map with These Waypoints';
-    btn.onclick = () => {
-      const origin = document.getElementById('originAddr').value.trim();
-      const dest   = document.getElementById('destAddr').value.trim();
-      const wpts   = document.getElementById('waypointsInput').value.trim().split('\n').filter(Boolean);
-      drawRouteOnMap(origin, dest, wpts);
-      showToast('Redrawing map with updated waypoints…');
-    };
-    // Insert after waypoints textarea
-    const wpSection = document.getElementById('waypointsInput').parentElement;
-    wpSection.appendChild(btn);
-  }
-  if (btn) btn.style.display = show ? 'block' : 'none';
+  // Button is now always in the HTML — nothing to do
 }
 
 function renderDemoRoute(origin, dest) {
