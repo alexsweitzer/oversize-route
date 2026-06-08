@@ -61,8 +61,9 @@ app.get('/health', (req, res) => {
 // ─── Public config (injects server-side env vars the frontend needs) ──────────
 app.get('/api/config', (req, res) => {
   res.json({
+    mapboxToken:   process.env.MAPBOX_TOKEN || '',
     googleMapsKey: process.env.GOOGLE_MAPS_API_KEY || '',
-    appUrl: process.env.APP_URL || '',
+    appUrl:        process.env.APP_URL || '',
   });
 });
 
