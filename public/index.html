@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OverSize Route — Office Portal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --black:#0d0f0e;--dark:#141816;--panel:#1a1e1b;--border:#2a302b;
+    --amber:#f5a623;--amber2:#ffba45;--green:#3ddc84;--green2:#1a6638;
+    --red:#ff4b4b;--blue:#4b8fff;--text:#e8ede9;--muted:#7a8c7d;--subtle:#2e352f;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Barlow',sans-serif;background:var(--black);color:var(--text);min-height:100vh;}
+  .view{display:none;min-height:100vh;flex-direction:column;}
+  .view.active{display:flex;}
+
+  /* LOGIN */
+  #view-login{align-items:center;justify-content:center;background:radial-gradient(ellipse 80% 60% at 50% 40%,#1a2e1a 0%,var(--black) 70%);position:relative;}
+  .login-grid{position:absolute;inset:0;background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);background-size:50px 50px;opacity:.35;mask-image:radial-gradient(ellipse 90% 80% at 50% 50%,black 30%,transparent 100%);}
+  .login-box{position:relative;z-index:1;width:100%;max-width:400px;padding:24px;}
+  .login-logo{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:56px;line-height:.88;text-transform:uppercase;letter-spacing:-2px;margin-bottom:8px;text-align:center;}
+  .login-logo em{color:var(--amber);font-style:normal;}
+  .login-sub{font-size:13px;color:var(--muted);text-align:center;margin-bottom:32px;}
+  .login-card{background:var(--panel);border:1px solid var(--border);padding:28px;}
+  .login-title{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;text-transform:uppercase;color:var(--amber);margin-bottom:20px;}
+  .field{margin-bottom:14px;}
+  .field-label{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:5px;}
+  .field-input{width:100%;background:var(--subtle);border:1px solid var(--border);color:var(--text);font-family:'Barlow',sans-serif;font-size:14px;padding:10px 14px;outline:none;transition:border-color .2s;}
+  .field-input:focus{border-color:var(--amber);}
+  .field-input::placeholder{color:var(--muted);}
+  .login-btn{width:100%;padding:13px;background:var(--amber);color:var(--black);border:none;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;letter-spacing:2px;text-transform:uppercase;cursor:pointer;transition:background .2s;margin-top:4px;}
+  .login-btn:hover{background:var(--amber2);}
+  .login-btn:disabled{opacity:.5;cursor:not-allowed;}
+  .login-err{font-size:12px;color:var(--red);margin-top:10px;text-align:center;display:none;}
+
+  /* TOPBAR */
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:52px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0;}
+  .topbar-logo{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:20px;text-transform:uppercase;}
+  .topbar-logo em{color:var(--amber);font-style:normal;}
+  .topbar-right{display:flex;align-items:center;gap:12px;}
+  .topbar-user{font-size:12px;color:var(--muted);}
+  .topbar-btn{background:transparent;border:1px solid var(--border);color:var(--muted);font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;letter-spacing:1px;text-transform:uppercase;padding:5px 14px;cursor:pointer;transition:all .2s;}
+  .topbar-btn:hover{border-color:var(--amber);color:var(--amber);}
+
+  /* OFFICE LAYOUT */
+  #view-office{background:var(--black);}
+  .office-layout{display:grid;grid-template-columns:380px 1fr 260px;flex:1;overflow:hidden;min-height:0;}
+  .sidebar{background:var(--panel);border-right:1px solid var(--border);overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:20px;}
+  .sec-label{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:var(--amber);margin-bottom:10px;display:flex;align-items:center;gap:8px;}
+  .sec-label::after{content:'';flex:1;height:1px;background:var(--border);}
+  .fi{width:100%;background:var(--subtle);border:1px solid var(--border);color:var(--text);font-family:'Barlow',sans-serif;font-size:13px;padding:9px 12px;outline:none;transition:border-color .2s;margin-bottom:8px;}
+  .fi:last-child{margin-bottom:0;}
+  .fi:focus{border-color:var(--amber);}
+  .fi::placeholder{color:var(--muted);}
+  .fl-label{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:5px;}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .upload-zone{border:2px dashed var(--border);padding:20px;text-align:center;cursor:pointer;transition:all .2s;position:relative;}
+  .upload-zone:hover{border-color:var(--amber);background:rgba(245,166,35,.04);}
+  .upload-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;}
+  .up-icon{font-size:28px;margin-bottom:8px;display:block;}
+  .up-title{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:14px;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px;}
+  .up-sub{font-size:11px;color:var(--muted);}
+  .permit-item{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--subtle);border:1px solid var(--border);margin-top:6px;}
+  .p-name{font-size:12px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .p-badge{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 8px;border:1px solid;}
+  .p-badge.ready{color:var(--green);border-color:var(--green2);background:rgba(61,220,132,.08);}
+  .p-badge.pending{color:var(--amber);border-color:var(--amber);background:rgba(245,166,35,.08);}
+  .analyze-btn{width:100%;padding:13px;background:var(--amber);color:var(--black);border:none;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:14px;letter-spacing:2px;text-transform:uppercase;cursor:pointer;transition:background .2s;display:flex;align-items:center;justify-content:center;gap:8px;}
+  .analyze-btn:hover:not(:disabled){background:var(--amber2);}
+  .analyze-btn:disabled{opacity:.4;cursor:not-allowed;}
+  .ghost-btn{width:100%;padding:11px;background:transparent;border:1px solid var(--border);color:var(--muted);font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;transition:all .2s;}
+  .ghost-btn:hover:not(:disabled){border-color:var(--amber);color:var(--amber);}
+  .ghost-btn:disabled{opacity:.3;cursor:not-allowed;}
+
+  /* MAP CENTER */
+  .map-area{background:#0d1a0e;position:relative;overflow:hidden;}
+  #mapSvg{width:100%;height:100%;}
+  .map-info{position:absolute;top:14px;right:14px;background:rgba(8,10,8,.9);border:1px solid var(--border);padding:14px 16px;display:none;}
+  .map-info.show{display:block;}
+  .mi-title{font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px;}
+  .mi-row{display:flex;justify-content:space-between;gap:20px;padding:4px 0;border-bottom:1px solid var(--border);}
+  .mi-row:last-child{border-bottom:none;}
+  .mi-k{font-size:11px;color:var(--muted);}
+  .mi-v{font-family:'Barlow Condensed',sans-serif;font-size:15px;font-weight:700;color:var(--amber);}
+
+  /* ROUTE STEPS */
+  .steps-panel{background:var(--panel);border-top:1px solid var(--border);max-height:220px;overflow-y:auto;display:none;}
+  .steps-panel.show{display:block;}
+  .step-row{display:flex;gap:10px;padding:10px 16px;border-bottom:1px solid var(--border);align-items:flex-start;}
+  .step-n{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;color:var(--amber);min-width:22px;}
+  .step-txt{font-size:13px;line-height:1.4;flex:1;}
+  .step-note{font-size:11px;color:var(--amber);margin-top:2px;}
+  .step-dist{font-size:12px;color:var(--muted);flex-shrink:0;}
+
+  /* RIGHT PANEL */
+  .right-panel{background:var(--panel);border-left:1px solid var(--border);overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:14px;}
+  .rp-card{background:var(--subtle);border:1px solid var(--border);padding:14px;}
+  .rp-title{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px;}
+  .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .stat-card{background:var(--panel);padding:10px 12px;}
+  .stat-l{font-size:10px;color:var(--muted);margin-bottom:3px;}
+  .stat-v{font-family:'Barlow Condensed',sans-serif;font-size:18px;font-weight:700;color:var(--text);}
+  .share-link{display:flex;gap:6px;margin-top:8px;}
+  .share-input{flex:1;background:var(--panel);border:1px solid var(--border);color:var(--green);font-family:monospace;font-size:11px;padding:7px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  .copy-btn{background:var(--green2);color:var(--green);border:1px solid var(--green2);font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;letter-spacing:1px;text-transform:uppercase;padding:7px 14px;cursor:pointer;white-space:nowrap;transition:all .2s;}
+  .copy-btn:hover{background:var(--green);color:var(--black);}
+  .alert-strip{background:#130d00;border:1px solid #3a2500;padding:10px 12px;font-size:11px;line-height:1.6;color:#c89040;}
+  .alert-strip strong{display:block;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--amber);margin-bottom:4px;}
+  .act-item{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);}
+  .act-item:last-child{border-bottom:none;}
+  .act-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;margin-top:4px;}
+  .act-txt{font-size:12px;line-height:1.4;flex:1;}
+  .act-time{font-size:10px;color:var(--muted);margin-top:2px;}
+
+  /* PROCESSING */
+  .proc-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:100;display:none;flex-direction:column;align-items:center;justify-content:center;gap:16px;}
+  .proc-overlay.active{display:flex;}
+  .proc-spin{width:52px;height:52px;border:3px solid var(--border);border-top-color:var(--amber);border-radius:50%;animation:spin .9s linear infinite;}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .proc-title{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:20px;letter-spacing:2px;text-transform:uppercase;}
+  .proc-step{font-size:12px;color:var(--muted);letter-spacing:1px;}
+  .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1c2e1c;color:var(--green);padding:10px 20px;font-size:12px;font-weight:600;display:none;white-space:nowrap;z-index:200;border:1px solid var(--green2);}
+  .toast.show{display:block;}
+  @media(max-width:900px){.office-layout{grid-template-columns:1fr;}.map-area{min-height:280px;}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="view-login" class="view active">
+  <div class="login-grid"></div>
+  <div class="login-box">
+    <div class="login-logo">Over<em>Size</em><br>Route</div>
+    <p class="login-sub">Permit-compliant dispatch platform</p>
+    <div class="login-card">
+      <div class="login-title">Dispatcher Login</div>
+      <div class="field">
+        <div class="field-label">Email</div>
+        <input type="email" class="field-input" id="loginEmail" placeholder="dispatcher@company.com" autocomplete="email"/>
+      </div>
+      <div class="field">
+        <div class="field-label">Password</div>
+        <input type="password" class="field-input" id="loginPassword" placeholder="••••••••" autocomplete="current-password"/>
+      </div>
+      <button class="login-btn" id="loginBtn" onclick="doLogin()">Sign In</button>
+      <div class="login-err" id="loginErr"></div>
+    </div>
+    <div style="text-align:center;margin-top:16px;font-size:11px;color:var(--muted);">
+      Default: admin@oversizeroute.app / ChangeMe123!
+    </div>
+  </div>
+</div>
+
+<!-- OFFICE PORTAL -->
+<div id="view-office" class="view">
+  <div class="topbar">
+    <div class="topbar-logo">Over<em>Size</em> Route</div>
+    <div class="topbar-right">
+      <span class="topbar-user" id="topbarUser"></span>
+      <button class="topbar-btn" onclick="doLogout()">Sign Out</button>
+    </div>
+  </div>
+
+  <div class="office-layout" style="flex:1;overflow:hidden;">
+
+    <!-- LEFT SIDEBAR -->
+    <div class="sidebar">
+      <div>
+        <div class="sec-label">Route Details</div>
+        <div class="fl-label">Origin Address</div>
+        <input type="text" class="fi" id="originAddr" placeholder="123 Industrial Blvd, Houston, TX"/>
+        <div class="fl-label">Destination Address</div>
+        <input type="text" class="fi" id="destAddr" placeholder="456 Port Ave, New Orleans, LA"/>
+        <div class="row2" style="margin-top:2px;">
+          <div>
+            <div class="fl-label">Load Description</div>
+            <input type="text" class="fi" id="loadDesc" placeholder="Transformer, 14'6&quot;"/>
+          </div>
+          <div>
+            <div class="fl-label">Assign Driver</div>
+            <select class="fi" id="driverSelect" style="background:var(--subtle);">
+              <option value="">Select driver...</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="sec-label">State Permits</div>
+        <div class="upload-zone" id="uploadZone">
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png" multiple id="permitFiles" onchange="handleFiles(this.files)"/>
+          <span class="up-icon">📄</span>
+          <div class="up-title">Drop permits here</div>
+          <div class="up-sub">PDF, JPG, PNG — one per state</div>
+        </div>
+        <div id="permitList"></div>
+      </div>
+
+      <div>
+        <div class="sec-label">Permit Waypoints</div>
+        <div class="fl-label">One per line, in order</div>
+        <textarea class="fi" id="waypointsInput" rows="3" placeholder="TX-225 E & I-610, Houston, TX&#10;US-90 ALT, Beaumont, TX&#10;LA-182, Morgan City, LA" style="resize:vertical;line-height:1.5;font-size:12px;"></textarea>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <button class="analyze-btn" id="analyzeBtn" onclick="buildRoute()" disabled>
+          <span>⚡</span> Analyze Permits &amp; Build Route
+        </button>
+        <button class="ghost-btn" id="sendBtn" onclick="sendToDriver()" disabled>
+          📱 Send to Driver
+        </button>
+      </div>
+    </div>
+
+    <!-- CENTER: MAP + STEPS -->
+    <div style="display:flex;flex-direction:column;overflow:hidden;">
+      <div class="map-area" style="flex:1;">
+        <svg id="mapSvg" viewBox="0 0 680 400" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M40 0L0 0 0 40" fill="none" stroke="#192b1a" stroke-width="0.5"/>
+            </pattern>
+          </defs>
+          <rect width="680" height="400" fill="#0d1a0e"/>
+          <rect width="680" height="400" fill="url(#grid)"/>
+          <text x="340" y="185" fill="#2a302b" font-family="Barlow Condensed,sans-serif" font-size="18" font-weight="700" text-anchor="middle" letter-spacing="4">ENTER ROUTE DETAILS</text>
+          <text x="340" y="210" fill="#2a302b" font-family="Barlow,sans-serif" font-size="13" text-anchor="middle">Upload permits and click Analyze to build the route</text>
+        </svg>
+        <div class="map-info" id="mapInfo">
+          <div class="mi-title">Route Summary</div>
+          <div class="mi-row"><span class="mi-k">Distance</span><span class="mi-v" id="miDist">—</span></div>
+          <div class="mi-row"><span class="mi-k">Drive Time</span><span class="mi-v" id="miTime">—</span></div>
+          <div class="mi-row"><span class="mi-k">States</span><span class="mi-v" id="miStates">—</span></div>
+          <div class="mi-row"><span class="mi-k">Waypoints</span><span class="mi-v" id="miWpts">—</span></div>
+        </div>
+      </div>
+      <div class="steps-panel" id="stepsPanel"></div>
+    </div>
+
+    <!-- RIGHT PANEL -->
+    <div class="right-panel">
+      <div class="rp-card">
+        <div class="rp-title">Driver</div>
+        <div style="font-size:14px;font-weight:500;" id="rpDriverName">No driver assigned</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:2px;" id="rpDriverUnit"></div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-l">Distance</div><div class="stat-v" id="statDist">—</div></div>
+        <div class="stat-card"><div class="stat-l">Est. Time</div><div class="stat-v" id="statTime">—</div></div>
+        <div class="stat-card"><div class="stat-l">States</div><div class="stat-v" id="statStates">—</div></div>
+        <div class="stat-card"><div class="stat-l">Permits</div><div class="stat-v" id="statPermits">0</div></div>
+      </div>
+
+      <div class="alert-strip" id="alertStrip" style="display:none">
+        <strong>Permit Restrictions</strong>
+        <div id="alertTxt"></div>
+      </div>
+
+      <div class="rp-card" id="shareCard" style="display:none">
+        <div class="rp-title">Driver Link</div>
+        <div class="share-link">
+          <div class="share-input" id="shareInput">—</div>
+          <button class="copy-btn" onclick="copyLink()">Copy</button>
+        </div>
+      </div>
+
+      <div class="rp-card">
+        <div class="rp-title">Activity</div>
+        <div id="activityList">
+          <div style="font-size:12px;color:var(--muted);">No activity yet</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- PROCESSING OVERLAY -->
+<div class="proc-overlay" id="procOverlay">
+  <div class="proc-spin"></div>
+  <div class="proc-title">Analyzing Permits</div>
+  <div class="proc-step" id="procStep">Reading documents...</div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── CONFIG ──────────────────────────────────────────────────────────────────
+const API = ''; // Empty = same origin (Railway serves both frontend and backend)
+
+// ─── STATE ───────────────────────────────────────────────────────────────────
+let token = localStorage.getItem('osr_token') || '';
+let currentUser = null;
+let currentRouteId = null;
+let permits = [];
+let activity = [];
+
+// ─── BOOT ────────────────────────────────────────────────────────────────────
+(async function boot() {
+  if (token) {
+    try {
+      const res = await api('GET', '/api/auth/me');
+      currentUser = res.user;
+      showOffice();
+    } catch(e) {
+      token = ''; localStorage.removeItem('osr_token');
+    }
+  }
+  // Pre-fill login hint
+  document.getElementById('loginEmail').value = 'admin@oversizeroute.app';
+})();
+
+// ─── API HELPER ───────────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+async function doLogin() {
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass  = document.getElementById('loginPassword').value;
+  const btn   = document.getElementById('loginBtn');
+  const err   = document.getElementById('loginErr');
+
+  if (!email || !pass) { showErr('Email and password required'); return; }
+  btn.disabled = true; btn.textContent = 'Signing in...';
+  err.style.display = 'none';
+
+  try {
+    const res = await api('POST', '/api/auth/login', { email, password: pass });
+    token = res.token;
+    currentUser = res.user;
+    localStorage.setItem('osr_token', token);
+    showOffice();
+  } catch(e) {
+    showErr(e.message);
+    btn.disabled = false; btn.textContent = 'Sign In';
+  }
+}
+
+function showErr(msg) {
+  const el = document.getElementById('loginErr');
+  el.textContent = msg; el.style.display = 'block';
+}
+
+function doLogout() {
+  token = ''; currentUser = null; currentRouteId = null;
+  localStorage.removeItem('osr_token');
+  document.getElementById('view-office').classList.remove('active');
+  document.getElementById('view-login').classList.add('active');
+}
+
+document.getElementById('loginPassword').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+// ─── SHOW OFFICE ──────────────────────────────────────────────────────────────
+async function showOffice() {
+  document.getElementById('view-login').classList.remove('active');
+  document.getElementById('view-office').classList.add('active');
+  document.getElementById('topbarUser').textContent = currentUser?.name || currentUser?.email || '';
+  await loadDrivers();
+}
+
+// ─── DRIVERS ──────────────────────────────────────────────────────────────────
+async function loadDrivers() {
+  try {
+    const res = await api('GET', '/api/drivers');
+    const sel = document.getElementById('driverSelect');
+    sel.innerHTML = '<option value="">Select driver...</option>';
+    res.drivers.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.id;
+      o.textContent = `${d.full_name}${d.unit_number ? ' ('+d.unit_number+')' : ''}`;
+      sel.appendChild(o);
+    });
+    updateDriverCard();
+  } catch(e) { console.warn('Could not load drivers:', e.message); }
+}
+
+function updateDriverCard() {
+  const sel = document.getElementById('driverSelect');
+  const opt = sel.options[sel.selectedIndex];
+  document.getElementById('rpDriverName').textContent = opt?.value ? opt.textContent : 'No driver assigned';
+  document.getElementById('rpDriverUnit').textContent = '';
+}
+document.getElementById('driverSelect').addEventListener('change', updateDriverCard);
+
+// ─── FILE UPLOAD ──────────────────────────────────────────────────────────────
+function handleFiles(files) {
+  Array.from(files).forEach(f => {
+    if (!permits.find(p => p.name === f.name)) {
+      permits.push({ name: f.name, file: f, status: 'pending' });
+    }
+  });
+  renderPermits();
+  checkReady();
+}
+
+function renderPermits() {
+  const el = document.getElementById('permitList');
+  el.innerHTML = permits.map(p => `
+    <div class="permit-item">
+      <span style="font-size:14px;">📄</span>
+      <span class="p-name">${p.name}</span>
+      <span class="p-badge ${p.status === 'ready' ? 'ready' : 'pending'}">${p.status === 'ready' ? '✓ Ready' : 'Pending'}</span>
+    </div>
+  `).join('');
+  document.getElementById('statPermits').textContent = permits.length;
+}
+
+const zone = document.getElementById('uploadZone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('dragover'); handleFiles(e.dataTransfer.files); });
+
+function checkReady() {
+  const ok = document.getElementById('originAddr').value.trim() && document.getElementById('destAddr').value.trim();
+  document.getElementById('analyzeBtn').disabled = !ok;
+}
+['originAddr','destAddr'].forEach(id => document.getElementById(id).addEventListener('input', checkReady));
+
+// ─── BUILD ROUTE ──────────────────────────────────────────────────────────────
+async function buildRoute() {
+  const origin   = document.getElementById('originAddr').value.trim();
+  const dest     = document.getElementById('destAddr').value.trim();
+  const load     = document.getElementById('loadDesc').value.trim();
+  const driverId = document.getElementById('driverSelect').value;
+
+  showProc(true);
+
+  const steps_msgs = [
+    'Creating route record...','Uploading permit files...','Reading permit documents...',
+    'Extracting route restrictions...','Building permit-compliant route...',
+    'Generating turn-by-turn directions...'
+  ];
+  let si = 0;
+  const ticker = setInterval(() => {
+    si = (si+1) % steps_msgs.length;
+    document.getElementById('procStep').textContent = steps_msgs[si];
+  }, 1000);
+
+  try {
+    // 1. Create route
+    const routeRes = await api('POST', '/api/routes', {
+      origin_address: origin, dest_address: dest,
+      load_description: load, driver_id: driverId || null,
+    });
+    currentRouteId = routeRes.route.id;
+    addActivity({ dot:'#4b8fff', txt:`Route created: ${origin} → ${dest}`, time:'just now' });
+
+    // 2. Upload permits
+    for (const p of permits) {
+      const fd = new FormData();
+      fd.append('permit', p.file);
+      await fetch(`${API}/api/permits/upload/${currentRouteId}`, {
+        method:'POST', headers:{ Authorization:'Bearer '+token }, body: fd,
+      });
+      p.status = 'ready';
+    }
+    renderPermits();
+    if (permits.length) addActivity({ dot:'#3ddc84', txt:`${permits.length} permit(s) uploaded`, time:'just now' });
+
+    // 3. Run AI analysis
+    document.getElementById('procStep').textContent = 'AI analyzing permits...';
+    const analysisRes = await api('POST', `/api/routes/${currentRouteId}/analyze`);
+    const route = analysisRes.route;
+    const analysis = analysisRes.analysis;
+
+    clearInterval(ticker);
+    showProc(false);
+
+    // 4. Render results
+    renderRouteResults(route, analysis);
+    addActivity({ dot:'#3ddc84', txt:`Route built — ${analysis?.steps?.length || 0} steps`, time:'just now' });
+    document.getElementById('sendBtn').disabled = false;
+    showToast('✓ Route built successfully');
+
+  } catch(e) {
+    clearInterval(ticker);
+    showProc(false);
+    console.error(e);
+    // Fallback to demo route if AI not configured
+    renderDemoRoute(origin, dest);
+    showToast('⚠ Using demo route (add Anthropic key for AI analysis)');
+  }
+}
+
+function renderRouteResults(route, analysis) {
+  const steps = route.steps || analysis?.steps || [];
+  const alerts = route.permit_alerts || analysis?.alerts || [];
+
+  // Map info
+  document.getElementById('miDist').textContent  = route.total_distance_mi ? route.total_distance_mi + ' mi' : (analysis?.distance_mi || '—');
+  document.getElementById('miTime').textContent  = route.total_duration_min ? Math.floor(route.total_duration_min/60)+'h '+( route.total_duration_min%60)+'m' : (analysis?.duration || '—');
+  document.getElementById('miStates').textContent = (route.states_crossed || analysis?.states || []).join(', ') || '—';
+  document.getElementById('miWpts').textContent  = steps.length;
+  document.getElementById('mapInfo').classList.add('show');
+
+  // Stats
+  document.getElementById('statDist').textContent   = route.total_distance_mi ? route.total_distance_mi + ' mi' : '—';
+  document.getElementById('statTime').textContent   = route.total_duration_min ? Math.floor(route.total_duration_min/60)+'h '+(route.total_duration_min%60)+'m' : '—';
+  document.getElementById('statStates').textContent = (route.states_crossed || analysis?.states || []).join(', ') || '—';
+
+  // Steps list
+  const panel = document.getElementById('stepsPanel');
+  panel.innerHTML = steps.map((s,i) => `
+    <div class="step-row">
+      <div class="step-n">${i+1}</div>
+      <div style="font-size:16px;flex-shrink:0">${s.icon||'→'}</div>
+      <div style="flex:1">
+        <div class="step-txt">${(s.text||s.instruction||'').replace(/<[^>]+>/g,'')}</div>
+        ${(s.note||s.permit) ? `<div class="step-note">⚠ ${s.note||s.permit}</div>` : ''}
+      </div>
+      <div class="step-dist">${s.dist||s.distance||''}</div>
+    </div>
+  `).join('');
+  panel.classList.add('show');
+
+  // Alerts
+  if (alerts.length) {
+    document.getElementById('alertTxt').innerHTML = alerts.map(a => `<div style="margin-bottom:4px"><strong>${a.state}:</strong> ${a.message}</div>`).join('');
+    document.getElementById('alertStrip').style.display = 'block';
+  }
+
+  // Share link
+  document.getElementById('shareInput').textContent = window.location.origin + '/drive/' + route.share_token;
+  document.getElementById('shareCard').style.display = 'block';
+
+  // Draw simple route on SVG
+  drawSvgRoute();
+}
+
+function renderDemoRoute(origin, dest) {
+  document.getElementById('miDist').textContent  = '487 mi';
+  document.getElementById('miTime').textContent  = '9h 45m';
+  document.getElementById('miStates').textContent = 'TX, LA';
+  document.getElementById('miWpts').textContent  = '9';
+  document.getElementById('mapInfo').classList.add('show');
+  document.getElementById('statDist').textContent   = '487 mi';
+  document.getElementById('statTime').textContent   = '9h 45m';
+  document.getElementById('statStates').textContent = 'TX, LA';
+  const demoSteps = [
+    {icon:'🚦',text:'Depart '+origin+' heading East on Industrial Blvd',note:'',dist:'0.4 mi'},
+    {icon:'➡️',text:'Turn RIGHT onto TX-225 E',note:'TX Permit: I-10 prohibited',dist:'12.3 mi'},
+    {icon:'↗️',text:'Merge onto I-610 S toward Port of Houston',note:'',dist:'8.1 mi'},
+    {icon:'➡️',text:'Exit 30A — US-90 ALT E',note:'TX Permit: Mandatory eastbound',dist:'34.7 mi'},
+    {icon:'⬆️',text:'Cross TX/LA state line on US-90',note:'TX permit ends — LA begins',dist:'48.2 mi'},
+    {icon:'⬅️',text:'Turn LEFT onto LA-182 W',note:'LA Permit: Avoid I-10 bridges',dist:'22.5 mi'},
+    {icon:'⬆️',text:'Continue on LA-182 through Morgan City',note:'',dist:'31.4 mi'},
+    {icon:'➡️',text:'Turn RIGHT onto US-90 BUS E',note:'Toward Houma',dist:'18.9 mi'},
+    {icon:'🏁',text:'Arrive at '+dest,note:'Permit route complete',dist:'0.0 mi'},
+  ];
+  const panel = document.getElementById('stepsPanel');
+  panel.innerHTML = demoSteps.map((s,i) => `
+    <div class="step-row">
+      <div class="step-n">${i+1}</div>
+      <div style="font-size:16px;flex-shrink:0">${s.icon}</div>
+      <div style="flex:1">
+        <div class="step-txt">${s.text}</div>
+        ${s.note ? `<div class="step-note">⚠ ${s.note}</div>` : ''}
+      </div>
+      <div class="step-dist">${s.dist}</div>
+    </div>
+  `).join('');
+  panel.classList.add('show');
+  drawSvgRoute();
+}
+
+function drawSvgRoute() {
+  const svg = document.getElementById('mapSvg');
+  svg.innerHTML = `
+    <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0L0 0 0 40" fill="none" stroke="#192b1a" stroke-width="0.5"/></pattern></defs>
+    <rect width="680" height="400" fill="#0d1a0e"/>
+    <rect width="680" height="400" fill="url(#grid)"/>
+    <line x1="0" y1="195" x2="680" y2="195" stroke="#1e3a22" stroke-width="10"/>
+    <line x1="340" y1="0" x2="340" y2="400" stroke="#1e3a22" stroke-width="10"/>
+    <line x1="120" y1="0" x2="120" y2="400" stroke="#162b19" stroke-width="6"/>
+    <line x1="540" y1="0" x2="540" y2="400" stroke="#162b19" stroke-width="6"/>
+    <polyline points="60,320 60,195 120,195 120,140 340,140 340,195 540,195 620,270"
+      fill="none" stroke="rgba(245,166,35,0.2)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="60,320 60,195 120,195 120,140 340,140 340,195 540,195 620,270"
+      fill="none" stroke="#f5a623" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="12,5"/>
+    <circle cx="60" cy="320" r="9" fill="#f5a623"/>
+    <text x="75" y="318" fill="#f5a623" font-size="11" font-family="sans-serif" font-weight="700">START</text>
+    <circle cx="120" cy="195" r="5" fill="#4b8fff"/>
+    <circle cx="340" cy="140" r="5" fill="#4b8fff"/>
+    <circle cx="540" cy="195" r="6" fill="#a855f7"/>
+    <text x="545" y="191" fill="#a855f7" font-size="9" font-family="sans-serif">State Line</text>
+    <circle cx="620" cy="270" r="9" fill="#3ddc84"/>
+    <text x="572" y="288" fill="#3ddc84" font-size="11" font-family="sans-serif" font-weight="700">END</text>
+  `;
+}
+
+// ─── SEND TO DRIVER ───────────────────────────────────────────────────────────
+async function sendToDriver() {
+  if (!currentRouteId) return;
+  try {
+    const res = await api('POST', `/api/routes/${currentRouteId}/send`);
+    addActivity({ dot:'#4b8fff', txt:'Route sent to driver via share link', time:'just now' });
+    showToast('📱 Route sent to driver');
+  } catch(e) {
+    showToast('⚠ Could not send: ' + e.message);
+  }
+}
+
+// ─── SHARE LINK ───────────────────────────────────────────────────────────────
+function copyLink() {
+  const txt = document.getElementById('shareInput').textContent;
+  navigator.clipboard.writeText(txt).catch(()=>{});
+  showToast('Link copied to clipboard');
+}
+
+// ─── ACTIVITY ─────────────────────────────────────────────────────────────────
+function addActivity(item) {
+  activity.unshift(item);
+  const el = document.getElementById('activityList');
+  el.innerHTML = activity.slice(0,8).map(a => `
+    <div class="act-item">
+      <div class="act-dot" style="background:${a.dot}"></div>
+      <div><div class="act-txt">${a.txt}</div><div class="act-time">${a.time}</div></div>
+    </div>
+  `).join('');
+}
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+function showProc(on) { document.getElementById('procOverlay').classList.toggle('active', on); }
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.remove('show'), 3500);
+}
+</script>
+</body>
+</html>

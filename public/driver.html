@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>OverSize Route — Driver Navigation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{--black:#080a08;--panel:#151a15;--border:#252d25;--amber:#f5a623;--amber2:#ffba45;--green:#3ddc84;--green2:#2ab866;--red:#ff4b4b;--blue:#4b9fff;--purple:#a855f7;--text:#e8ede9;--muted:#6b7d6e;--subtle:#1f261f;}
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;overflow:hidden;background:var(--black);color:var(--text);font-family:'Barlow',sans-serif;}
+  .screen{display:none;height:100dvh;flex-direction:column;overflow:hidden;}
+  .screen.on{display:flex;}
+
+  /* NOT FOUND */
+  #scr-notfound{align-items:center;justify-content:center;text-align:center;padding:32px;}
+  .nf-logo{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:48px;text-transform:uppercase;margin-bottom:8px;}
+  .nf-logo em{color:var(--amber);font-style:normal;}
+
+  /* GPS */
+  #scr-gps{background:var(--black);}
+  .topbar{display:flex;align-items:center;justify-content:space-between;padding:9px 14px;background:var(--panel);border-bottom:1px solid var(--border);flex-shrink:0;}
+  .logo{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:17px;text-transform:uppercase;}
+  .logo em{color:var(--amber);font-style:normal;}
+  .chips{display:flex;gap:5px;}
+  .chip{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;padding:3px 8px;border:1px solid;white-space:nowrap;}
+  .chip.green{color:var(--green);border-color:var(--green2);background:rgba(61,220,132,.06);}
+  .chip.amber{color:var(--amber);border-color:var(--amber);background:rgba(245,166,35,.06);}
+  .chip.dim{color:var(--muted);border-color:var(--border);}
+  .cdot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+  .cdot.pulse{animation:blink 1.4s infinite;}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  .map-wrap{flex:1;position:relative;overflow:hidden;min-height:0;background:#0d1a0e;}
+  #mapCanvas{width:100%;height:100%;}
+  .mov{position:absolute;background:rgba(8,10,8,.88);border:1px solid var(--border);pointer-events:none;}
+  #spdBadge{bottom:12px;left:12px;padding:7px 12px;text-align:center;}
+  .spd-n{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:28px;line-height:1;color:var(--amber);}
+  .spd-u{font-size:10px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;}
+  #etaBadge{bottom:12px;right:12px;padding:7px 12px;text-align:center;min-width:80px;}
+  .eta-v{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:16px;line-height:1;color:var(--text);}
+  .eta-l{font-size:10px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-top:2px;}
+  .tbanner{flex-shrink:0;padding:13px 16px;display:flex;gap:13px;align-items:center;transition:background .4s;border-top:2px solid transparent;}
+  .tbanner.straight{background:var(--panel);}
+  .tbanner.turning{background:#1a1200;border-color:var(--amber);}
+  .tbanner.arrived{background:#0a1f12;border-color:var(--green);}
+  .ticon{width:54px;height:54px;flex-shrink:0;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:28px;background:rgba(0,0,0,.3);}
+  .turning .ticon{background:rgba(245,166,35,.12);}
+  .arrived .ticon{background:rgba(61,220,132,.12);}
+  .ttxt{flex:1;min-width:0;}
+  .tmain{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:clamp(15px,4vw,20px);text-transform:uppercase;line-height:1.1;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tsub{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .tsub.w{color:var(--amber);}
+  .tdist{text-align:right;flex-shrink:0;}
+  .dnum{font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:clamp(20px,5vw,26px);line-height:1;}
+  .dnum.far{color:var(--text);}
+  .dnum.mid{color:var(--amber);}
+  .dnum.near{color:var(--red);}
+  .dunit{font-size:11px;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;}
+  .progrow{flex-shrink:0;padding:6px 14px;background:var(--panel);border-top:1px solid var(--border);display:flex;align-items:center;gap:10px;}
+  .plabel{font-size:10px;color:var(--muted);font-weight:600;letter-spacing:1px;text-transform:uppercase;white-space:nowrap;}
+  .ptrack{flex:1;height:5px;background:var(--subtle);overflow:hidden;}
+  .pfill{height:100%;background:var(--green);transition:width .6s ease;}
+  .premain{font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:var(--muted);white-space:nowrap;}
+  .pstrip{flex-shrink:0;padding:6px 14px;background:#130d00;border-top:1px solid #3a2500;display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:1.5;}
+  .pstrip strong{color:var(--amber);display:block;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:1px;}
+  .slist{flex-shrink:0;max-height:200px;overflow-y:auto;border-top:1px solid var(--border);}
+  .srow{display:flex;gap:10px;padding:10px 14px;align-items:center;border-bottom:1px solid var(--border);cursor:pointer;transition:background .15s;}
+  .srow:hover{background:var(--subtle);}
+  .srow.done{opacity:.3;}
+  .srow.active{background:rgba(245,166,35,.07);border-left:3px solid var(--amber);}
+  .sico{font-size:16px;flex-shrink:0;}
+  .sinf{flex:1;min-width:0;}
+  .stxt{font-size:13px;font-weight:500;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .snote{font-size:11px;color:var(--amber);margin-top:1px;}
+  .sdist{font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:var(--muted);flex-shrink:0;}
+  .ctrls{flex-shrink:0;display:flex;border-top:1px solid var(--border);}
+  .cbtn{flex:1;padding:12px 4px;background:var(--panel);border:none;cursor:pointer;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:10px;letter-spacing:1px;text-transform:uppercase;color:var(--muted);display:flex;flex-direction:column;align-items:center;gap:2px;border-right:1px solid var(--border);transition:all .2s;}
+  .cbtn:last-child{border-right:none;}
+  .cbtn:hover,.cbtn.on{background:var(--subtle);color:var(--amber);}
+  .cbtn-ic{font-size:18px;}
+  .toast{position:fixed;top:66px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.93);border:1px solid var(--amber);padding:8px 16px;font-size:11px;color:var(--amber);white-space:nowrap;z-index:999;display:none;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;animation:fu .3s ease;}
+  .toast.show{display:block;}
+  @keyframes fu{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+  .slist::-webkit-scrollbar{width:3px;}
+  .slist::-webkit-scrollbar-track{background:var(--panel);}
+  .slist::-webkit-scrollbar-thumb{background:var(--border);}
+</style>
+</head>
+<body>
+
+<!-- NOT FOUND -->
+<div id="scr-notfound" class="screen">
+  <div class="nf-logo">Over<em>Size</em><br>Route</div>
+  <p style="color:var(--muted);font-size:14px;margin-bottom:8px;">Route not found or not yet sent.</p>
+  <p style="color:var(--muted);font-size:12px;">Contact your dispatcher.</p>
+</div>
+
+<!-- GPS SCREEN -->
+<div id="scr-gps" class="screen">
+  <div class="topbar">
+    <div class="logo">Over<em>Size</em> Route</div>
+    <div class="chips">
+      <div class="chip dim" id="gpsChip"><div class="cdot" id="gpsDot"></div><span id="gpsTxt">GPS</span></div>
+      <div class="chip dim" id="voiceChip" onclick="toggleVoice()" style="cursor:pointer"><span>🔊</span><span id="voiceTxt">VOICE</span></div>
+    </div>
+  </div>
+  <div class="map-wrap">
+    <canvas id="mapCanvas"></canvas>
+    <div class="mov" id="spdBadge"><div class="spd-n" id="spdNum">0</div><div class="spd-u">MPH</div></div>
+    <div class="mov" id="etaBadge"><div class="eta-v" id="etaV">—</div><div class="eta-l">ETA</div></div>
+  </div>
+  <div class="tbanner straight" id="tbanner">
+    <div class="ticon" id="ticon">⬆</div>
+    <div class="ttxt">
+      <div class="tmain" id="tmain">Loading route…</div>
+      <div class="tsub" id="tsub">Connecting to server</div>
+    </div>
+    <div class="tdist">
+      <div class="dnum far" id="dnum">—</div>
+      <div class="dunit" id="dunit">mi</div>
+    </div>
+  </div>
+  <div class="progrow">
+    <div class="plabel" id="plabel">Step 1</div>
+    <div class="ptrack"><div class="pfill" id="pfill" style="width:0%"></div></div>
+    <div class="premain" id="premain">—</div>
+  </div>
+  <div class="pstrip" id="pstrip" style="display:none">
+    <span style="font-size:14px;flex-shrink:0">⚠️</span>
+    <div id="ptxt"><strong>PERMIT RESTRICTION</strong></div>
+  </div>
+  <div class="slist" id="slist"></div>
+  <div class="ctrls">
+    <button class="cbtn" id="voiceBtn" onclick="toggleVoice()"><div class="cbtn-ic">🔊</div>Voice</button>
+    <button class="cbtn" onclick="prevStep()"><div class="cbtn-ic">⏮</div>Prev</button>
+    <button class="cbtn" onclick="nextStep()"><div class="cbtn-ic">⏭</div>Next</button>
+    <button class="cbtn" onclick="recenter()"><div class="cbtn-ic">🎯</div>Center</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ─── GET SHARE TOKEN FROM URL ─────────────────────────────────────────────────
+// URL pattern: /drive/SHARETOKEN
+const token = window.location.pathname.split('/').filter(Boolean).pop();
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+let steps=[], waypoints=[], routeId=null, shareToken=token;
+let currentStep=0, voiceOn=true;
+let userLat=null, userLng=null, userSpeed=0, userHeading=0;
+let gpsWatchId=null, pingTimer=null, wakeLock=null;
+let annPre=false, annImm=false, annNow=false;
+let mapCanvas, ctx, userPanned=false;
+
+// ─── BOOT ─────────────────────────────────────────────────────────────────────
+(async function boot() {
+  if (!token || token === 'driver') {
+    showScreen('notfound'); return;
+  }
+  try {
+    const res = await fetch(`/drive/${token}/data`);
+    if (!res.ok) throw new Error('Not found');
+    const data = await res.json();
+    const route = data.route;
+    routeId   = route.id;
+    steps     = route.steps || [];
+    waypoints = route.waypoints || [];
+    currentStep = route.current_step || 0;
+
+    if (!steps.length) { showScreen('notfound'); return; }
+
+    showScreen('gps');
+    initCanvas();
+    renderStepList();
+    updateBanner();
+    acquireGPS();
+    acquireWakeLock();
+    startPingTimer();
+    if (window.speechSynthesis) {
+      speechSynthesis.getVoices();
+      speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
+    }
+    speak('Navigation started. ' + dirPhrase(steps[currentStep]));
+  } catch(e) {
+    console.error(e);
+    showScreen('notfound');
+  }
+})();
+
+// ─── GPS ──────────────────────────────────────────────────────────────────────
+function acquireGPS() {
+  if (!navigator.geolocation) { setGPSChip(false,'No GPS'); return; }
+  setGPSChip(null,'Acquiring…');
+  gpsWatchId = navigator.geolocation.watchPosition(pos => {
+    userLat   = pos.coords.latitude;
+    userLng   = pos.coords.longitude;
+    userSpeed = (pos.coords.speed||0)*2.237;
+    if (pos.coords.heading!=null&&!isNaN(pos.coords.heading)) userHeading=pos.coords.heading;
+    setGPSChip(true);
+    document.getElementById('spdNum').textContent = Math.round(userSpeed);
+    drawMap();
+    checkProx();
+  }, ()=>setGPSChip(false,'GPS error'),
+  {enableHighAccuracy:true,maximumAge:2000,timeout:10000});
+}
+
+function checkProx() {
+  if (!userLat||currentStep>=waypoints.length-1) return;
+  const next = waypoints[Math.min(currentStep+1,waypoints.length-1)];
+  if (!next||!next.lat) return;
+  const d = haversine(userLat,userLng,next.lat,next.lng);
+  updateDist(d); checkVoice(d);
+  if (d<0.04&&currentStep<steps.length-1) {
+    currentStep++; annPre=annImm=annNow=false;
+    updateBanner(); renderStepList();
+    speak(dirPhrase(steps[currentStep]));
+  }
+}
+
+// ─── PING SERVER (sends GPS location every 30s) ───────────────────────────────
+function startPingTimer() {
+  pingTimer = setInterval(async () => {
+    if (!userLat||!routeId) return;
+    try {
+      await fetch(`/api/routes/${routeId}/ping`, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          token: shareToken, lat:userLat, lng:userLng,
+          speed_mph:Math.round(userSpeed), heading_deg:Math.round(userHeading),
+          current_step:currentStep,
+        }),
+      });
+    } catch(e) {}
+  }, 30000);
+}
+
+// ─── VOICE ────────────────────────────────────────────────────────────────────
+function checkVoice(d) {
+  const s=steps[currentStep]; if(!s||s.dir==='arrive'||s.dir==='straight') return;
+  if(d>0.4&&!annPre){annPre=true;speak(`${d>1?`In ${Math.round(d)} miles`:'In half a mile'}, ${dirPhrase(s)}`);}
+  else if(d<=0.15&&d>0.04&&!annImm){annImm=true;speak(`In 500 feet, ${dirPhrase(s)}`);}
+  else if(d<=0.04&&!annNow){annNow=true;speak(dirPhrase(s)+' now');}
+}
+
+function dirPhrase(s) {
+  const road=(s.text||'').replace(/<[^>]+>/g,'').replace(/turn (right|left) onto /i,'').replace(/merge onto /i,'').replace(/continue (straight )?(on )?/i,'').split(/[—\-–]/)[0].trim();
+  return{right:`turn right onto ${road}`,left:`turn left onto ${road}`,merge:`merge onto ${road}`,exit:`take the exit toward ${road}`,arrive:'you have arrived at your destination'}[s.dir]||`continue on ${road}`;
+}
+
+function speak(text) {
+  if(!voiceOn||!window.speechSynthesis) return;
+  speechSynthesis.cancel();
+  const u=new SpeechSynthesisUtterance(text); u.rate=0.92; u.pitch=1.0; u.volume=1.0;
+  const vs=speechSynthesis.getVoices();
+  const pick=vs.find(v=>v.name.includes('Samantha')||v.name.includes('Google US English')||v.name.includes('Microsoft David')||(v.lang==='en-US'&&v.localService));
+  if(pick)u.voice=pick;
+  speechSynthesis.speak(u);
+  showToast('🔊 '+(text.length>55?text.slice(0,53)+'…':text));
+}
+
+function toggleVoice() {
+  voiceOn=!voiceOn;
+  document.getElementById('voiceChip').className='chip '+(voiceOn?'amber':'dim');
+  document.getElementById('voiceTxt').textContent=voiceOn?'VOICE ON':'VOICE';
+  document.getElementById('voiceBtn').classList.toggle('on',voiceOn);
+  voiceOn?speak('Voice on'):showToast('🔇 Voice muted');
+}
+
+// ─── STEPS ────────────────────────────────────────────────────────────────────
+function nextStep(){if(currentStep<steps.length-1){currentStep++;annPre=annImm=annNow=false;updateBanner();renderStepList();speak(dirPhrase(steps[currentStep]));}}
+function prevStep(){if(currentStep>0){currentStep--;annPre=annImm=annNow=false;updateBanner();renderStepList();}}
+
+function updateBanner() {
+  const s=steps[currentStep]; if(!s) return;
+  const cls=s.dir==='arrive'?'arrived':['right','left','merge','exit'].includes(s.dir)?'turning':'straight';
+  document.getElementById('tbanner').className='tbanner '+cls;
+  document.getElementById('ticon').textContent=s.arrow||'⬆';
+  document.getElementById('tmain').textContent=(s.text||'').replace(/<[^>]+>/g,'');
+  const tsub=document.getElementById('tsub');
+  if(s.note){tsub.textContent='⚠ '+s.note;tsub.className='tsub w';}
+  else{tsub.textContent=s.dir==='arrive'?'Permit route complete ✓':'Following permit route';tsub.className='tsub';}
+  updateDist(s.dist||0);
+  const ps=document.getElementById('pstrip');
+  if(s.permit){ps.style.display='flex';document.getElementById('ptxt').innerHTML=`<strong>PERMIT RESTRICTION</strong>${s.permit}`;}
+  else{ps.style.display='none';}
+  const pct=currentStep/Math.max(steps.length-1,1)*100;
+  document.getElementById('pfill').style.width=pct+'%';
+  document.getElementById('plabel').textContent=`Step ${currentStep+1} / ${steps.length}`;
+  const rem=steps.slice(currentStep).reduce((a,r)=>a+(parseFloat(r.dist)||0),0);
+  document.getElementById('premain').textContent=rem.toFixed(0)+' mi left';
+  const hrs=rem/45,h=Math.floor(hrs),m=Math.round((hrs-h)*60);
+  document.getElementById('etaV').textContent=h>0?`${h}h ${m}m`:`${m}m`;
+}
+
+function updateDist(d) {
+  const n=document.getElementById('dnum'),u=document.getElementById('dunit');
+  const dm=typeof d==='string'?parseFloat(d):d;
+  if(dm>=1.0){n.textContent=dm.toFixed(1);u.textContent='mi';n.className='dnum far';}
+  else if(dm>=0.1){n.textContent=Math.round(dm*5280/100)*100;u.textContent='ft';n.className='dnum mid';}
+  else{n.textContent=Math.round(dm*5280);u.textContent='ft';n.className='dnum near';}
+}
+
+function renderStepList() {
+  const w=document.getElementById('slist');
+  w.innerHTML=steps.map((s,i)=>`
+    <div class="srow ${i<currentStep?'done':i===currentStep?'active':''}" onclick="jumpTo(${i})">
+      <div class="sico">${s.icon||'→'}</div>
+      <div class="sinf">
+        <div class="stxt">${(s.text||'').replace(/<[^>]+>/g,'')}</div>
+        ${s.note?`<div class="snote">⚠ ${s.note}</div>`:''}
+      </div>
+      <div class="sdist">${s.dist>0?(typeof s.dist==='number'?s.dist.toFixed(1):s.dist)+' mi':'Dest'}</div>
+    </div>`).join('');
+  const a=w.querySelector('.active'); if(a)a.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function jumpTo(i){currentStep=i;annPre=annImm=annNow=false;updateBanner();renderStepList();}
+
+// ─── MAP CANVAS ───────────────────────────────────────────────────────────────
+function initCanvas() {
+  mapCanvas=document.getElementById('mapCanvas');
+  ctx=mapCanvas.getContext('2d');
+  resize(); window.addEventListener('resize',resize);
+  requestAnimationFrame(drawMap);
+}
+
+function resize() {
+  const r=mapCanvas.parentElement.getBoundingClientRect();
+  const dpr=window.devicePixelRatio;
+  mapCanvas.width=r.width*dpr; mapCanvas.height=r.height*dpr;
+  mapCanvas.style.width=r.width+'px'; mapCanvas.style.height=r.height+'px';
+  drawMap();
+}
+
+function project(lat,lng) {
+  const W=mapCanvas.width,H=mapCanvas.height,dpr=window.devicePixelRatio;
+  const zoom=200*dpr;
+  const cLat=userLat||37.7;
+  const cLng=userLng||-95.7;
+  return [W/2+(lng-cLng)*zoom, H/2-(lat-cLat)*zoom];
+}
+
+function drawMap() {
+  if(!ctx) return;
+  const W=mapCanvas.width,H=mapCanvas.height,dpr=window.devicePixelRatio;
+  ctx.fillStyle='#0d1a0e'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#192b1a'; ctx.lineWidth=1;
+  const gs=30*dpr;
+  for(let x=0;x<W;x+=gs){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=gs){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  // Draw route if we have real waypoints with lat/lng
+  const realWpts = waypoints.filter(w=>w&&w.lat);
+  if (realWpts.length > 1) {
+    ctx.beginPath();
+    realWpts.forEach((w,i)=>{const[x,y]=project(w.lat,w.lng);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+    ctx.strokeStyle='rgba(245,166,35,0.2)'; ctx.lineWidth=16*dpr; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();
+    ctx.beginPath();
+    realWpts.forEach((w,i)=>{const[x,y]=project(w.lat,w.lng);i===0?ctx.moveTo(x,y):ctx.lineTo(x,y);});
+    ctx.strokeStyle='#f5a623'; ctx.lineWidth=4*dpr; ctx.setLineDash([14*dpr,5*dpr]); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Truck marker
+  if (userLat&&userLng) {
+    const[tx,ty]=project(userLat,userLng);
+    ctx.beginPath(); ctx.arc(tx,ty,11*dpr,0,Math.PI*2);
+    ctx.fillStyle='#4b9fff'; ctx.fill();
+    ctx.strokeStyle='#fff'; ctx.lineWidth=2*dpr; ctx.stroke();
+    ctx.fillStyle='#fff'; ctx.font=`bold ${13*dpr}px sans-serif`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('🚛',tx,ty);
+  } else {
+    // No GPS yet — draw centered placeholder
+    ctx.fillStyle='rgba(245,166,35,0.15)'; ctx.font=`${14*dpr}px Barlow,sans-serif`;
+    ctx.textAlign='center'; ctx.fillText('Acquiring GPS…',W/2,H/2);
+  }
+}
+
+function recenter(){userPanned=false;drawMap();}
+
+// ─── STATUS ───────────────────────────────────────────────────────────────────
+function setGPSChip(on,label){
+  document.getElementById('gpsChip').className='chip '+(on===true?'green':'dim');
+  document.getElementById('gpsDot').className='cdot'+(on===true?' pulse':'');
+  document.getElementById('gpsTxt').textContent=label||(on===true?'GPS LIVE':'GPS OFF');
+}
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+function haversine(a,b,c,d){const R=3958.8,dL=(c-a)*Math.PI/180,dO=(d-b)*Math.PI/180,x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dO/2)**2;return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));}
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),3500);}
+function showScreen(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('on'));document.getElementById('scr-'+id).classList.add('on');}
+async function acquireWakeLock(){try{if('wakeLock'in navigator)wakeLock=await navigator.wakeLock.request('screen');}catch(e){}}
+</script>
+</body>
+</html>
