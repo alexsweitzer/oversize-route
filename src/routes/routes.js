@@ -126,6 +126,7 @@ router.post('/:id/analyze', requireAuth, async (req, res) => {
 
     // Run AI analysis
     const analysis = await analyzePermitsWithAI(route, permits);
+    console.log(`AI analysis complete: ${analysis.steps?.length} steps, states: ${analysis.states?.join(',')}, waypoints: ${analysis.map_waypoints?.join(' | ')}`);
 
     // Save results
     const updated = await getOne(`
