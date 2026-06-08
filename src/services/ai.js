@@ -7,28 +7,47 @@ const path  = require('path');
  * Falls back gracefully if pdf-parse is unavailable or file is an image.
  */
 async function extractPermitText(permit) {
-  // If no local file path, just return the filename as context
+  // Remote file (S3/R2) — can't read server-side, use filename as context
   if (!permit.file_url || permit.file_url.startsWith('http')) {
-    return `Permit file: ${permit.file_name} (State: ${permit.state_code}) — file stored remotely, use state routing standards`;
+    console.log(`Permit ${permit.file_name}: remote file, using filename context only`);
+    return `Permit file: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
   }
 
-  const localPath = path.join(__dirname, '../../', permit.file_url);
+  // Local file — file_url is like "/uploads/1234567890-KM_OH.pdf"
+  // Resolve from project root (two levels up from src/services/)
+  const projectRoot = path.join(__dirname, '../../');
+  // Strip leading slash from file_url before joining
+  const relativePath = permit.file_url.replace(/^\//, '');
+  const localPath = path.join(projectRoot, relativePath);
+
+  console.log(`Permit ${permit.file_name}: reading from ${localPath}`);
+
   const ext = path.extname(permit.file_name).toLowerCase();
 
   try {
-    if (ext === '.pdf' && fs.existsSync(localPath)) {
+    if (!fs.existsSync(localPath)) {
+      console.warn(`Permit file not found at: ${localPath}`);
+      return `Permit on file: ${permit.file_name} (State: ${permit.state_code}) — file not found, apply standard ${permit.state_code} OSOW routing rules`;
+    }
+
+    if (ext === '.pdf') {
       const pdfParse = require('pdf-parse');
       const buffer   = fs.readFileSync(localPath);
       const data     = await pdfParse(buffer);
-      // Truncate to 2000 chars per permit to stay within token limits
-      const text = data.text.replace(/\s+/g, ' ').trim().slice(0, 2000);
+      const text     = data.text.replace(/\s+/g, ' ').trim().slice(0, 3000);
+      console.log(`Permit ${permit.file_name}: extracted ${text.length} chars`);
       return `=== ${permit.state_code} PERMIT: ${permit.file_name} ===\n${text}\n`;
     }
+
+    if (['.jpg','.jpeg','.png'].includes(ext)) {
+      // Image permits — read as base64 and note it's an image
+      console.log(`Permit ${permit.file_name}: image file, using filename context`);
+      return `Permit image: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
+    }
   } catch (e) {
-    console.warn(`Could not parse permit PDF ${permit.file_name}:`, e.message);
+    console.warn(`Could not parse permit ${permit.file_name}:`, e.message);
   }
 
-  // Image permit or parse failure — return metadata only
   return `Permit on file: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
 }
 
