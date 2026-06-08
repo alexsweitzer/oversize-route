@@ -76,8 +76,10 @@
   .ghost-btn:disabled{opacity:.3;cursor:not-allowed;}
 
   /* MAP CENTER */
-  .map-area{background:#0d1a0e;position:relative;overflow:hidden;}
-  #mapboxMap{width:100%;height:100%;position:absolute;inset:0;}
+  .map-area{background:#0d1a0e;position:relative;overflow:hidden;min-height:300px;}
+  #mapboxMap{width:100%;height:100%;position:absolute;inset:0;min-height:100%;}
+  .mapboxgl-canvas{display:block;}
+  .mapboxgl-map{width:100%!important;height:100%!important;}
   #mapSvg{width:100%;height:100%;}
   .map-info{position:absolute;top:14px;right:14px;background:rgba(8,10,8,.9);border:1px solid var(--border);padding:14px 16px;display:none;}
   .map-info.show{display:block;}
@@ -774,12 +776,11 @@ function attachMapboxAutocomplete(inputId) {
 
 // ─── DRAW ROUTE ON MAPBOX ─────────────────────────────────────────────────────
 // ─── ROUTE STATE ──────────────────────────────────────────────────────────────
-let routeOriginCoords  = null;  // [lng, lat]
-let routeDestCoords    = null;  // [lng, lat]
-let routeDragPoints    = [];    // [[lng,lat], ...] user-added drag waypoints
-let routeMarkers       = [];    // mapboxgl.Marker instances for drag handles
-let isDragging         = false;
-let dragMarkerIdx      = -1;
+let routeOriginCoords  = null;
+let routeDestCoords    = null;
+let routeDragPoints    = [];    // user-added drag points only (shown as handles)
+let routeAiWaypoints   = [];    // AI permit waypoints (used for routing, NOT shown as handles)
+let routeMarkers       = [];
 
 async function drawRouteOnMap(origin, dest, permitWaypoints) {
   const token = getMapsKey();
@@ -803,17 +804,20 @@ async function drawRouteOnMap(origin, dest, permitWaypoints) {
     routeOriginCoords = oCoords;
     routeDestCoords   = dCoords;
 
-    // Geocode AI permit waypoints as initial drag points
-    routeDragPoints = [];
+    // Geocode AI permit waypoints — used for routing only, not shown as drag handles
+    routeAiWaypoints = [];
     for (const wp of permitWaypoints.filter(w => w.trim()).slice(0, 20)) {
       const c = await geocode(wp, token);
-      if (c) routeDragPoints.push(c);
+      if (c) routeAiWaypoints.push(c);
     }
+
+    // Clear any previous user drag points
+    routeDragPoints = [];
 
     await renderRoute(token);
     setupDragInteraction(token);
 
-    showToast('✅ Route drawn — click & drag the line to reshape');
+    showToast('✅ Route drawn — click the line to add drag points');
   } catch(e) {
     console.warn('Route error:', e.message);
     showToast('⚠ Routing error: ' + e.message);
@@ -823,7 +827,9 @@ async function drawRouteOnMap(origin, dest, permitWaypoints) {
 // ─── RENDER ROUTE (called on init and after every drag) ───────────────────────
 async function renderRoute(token) {
   const t = token || getMapsKey();
-  const allCoords = [routeOriginCoords, ...routeDragPoints, routeDestCoords];
+  // AI waypoints shape the base route; user drag points override specific segments
+  // Merge: origin → [ai waypoints interleaved with drag points] → dest
+  const allCoords = [routeOriginCoords, ...routeAiWaypoints, ...routeDragPoints, routeDestCoords];
   const coordStr  = allCoords.map(c => c.join(',')).join(';');
 
   const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
@@ -891,9 +897,10 @@ function clearDragPoints() {
   routeDragPoints = [];
   routeMarkers.forEach(m => m.remove());
   routeMarkers = [];
-  document.getElementById('clearDragBtn').style.display = 'none';
+  const clearBtn = document.getElementById('clearDragBtn');
+  if (clearBtn) clearBtn.style.display = 'none';
   renderRoute(getMapsKey());
-  showToast('Drag edits cleared — showing original route');
+  showToast('Manual edits cleared — showing permit route');
 }
 
 // ─── DRAG INTERACTION ─────────────────────────────────────────────────────────
@@ -949,12 +956,11 @@ function refreshDragHandles() {
       width:16px; height:16px; border-radius:50%;
       background:#f5a623; border:2.5px solid #fff;
       cursor:grab; box-shadow:0 2px 8px rgba(0,0,0,.5);
-      transition:transform .1s;
     `;
     el.title = 'Drag to reshape route • Double-click to remove';
 
-    el.addEventListener('mouseenter', () => { el.style.transform = 'scale(1.4)'; });
-    el.addEventListener('mouseleave', () => { el.style.transform = 'scale(1)'; });
+    el.addEventListener('mouseenter', () => { el.style.background = '#ffba45'; el.style.width = '20px'; el.style.height = '20px'; el.style.marginLeft = '-2px'; el.style.marginTop = '-2px'; });
+    el.addEventListener('mouseleave', () => { el.style.background = '#f5a623'; el.style.width = '16px'; el.style.height = '16px'; el.style.marginLeft = ''; el.style.marginTop = ''; });
 
     // Double-click removes this drag point
     el.addEventListener('dblclick', (e) => {
