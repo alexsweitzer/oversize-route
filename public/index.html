@@ -695,48 +695,76 @@ async function initGoogleMapsEarly(key) {
 
 function initAutocomplete() {
   if (!window.google || !window.google.maps || !window.google.maps.places) {
-    console.warn('Places API not available — autocomplete disabled');
+    console.warn('Places API not available');
     return;
   }
-
   try {
-    const options = {
-      componentRestrictions: { country: ['us', 'ca'] },
-      fields: ['formatted_address', 'geometry', 'name'],
-      types: ['address', 'establishment'],
-    };
-
-    const originAC = new google.maps.places.Autocomplete(
-      document.getElementById('originAddr'), options
-    );
-    const destAC = new google.maps.places.Autocomplete(
-      document.getElementById('destAddr'), options
-    );
-
-    originAC.addListener('place_changed', () => {
-      const place = originAC.getPlace();
-      if (place.formatted_address) {
-        document.getElementById('originAddr').value = place.formatted_address;
-      }
-      checkReady();
-    });
-
-    destAC.addListener('place_changed', () => {
-      const place = destAC.getPlace();
-      if (place.formatted_address) {
-        document.getElementById('destAddr').value = place.formatted_address;
-      }
-      checkReady();
-    });
-
-    ['originAddr', 'destAddr'].forEach(id => {
-      document.getElementById(id).addEventListener('keydown', e => {
-        if (e.key === 'Enter') e.preventDefault();
-      });
-    });
+    attachAutocomplete('originAddr');
+    attachAutocomplete('destAddr');
   } catch(e) {
     console.warn('Autocomplete init failed:', e.message);
   }
+}
+
+function attachAutocomplete(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+
+  const svc = new google.maps.places.AutocompleteService();
+  let dropdown = null;
+  let debounceTimer = null;
+
+  function getDropdown() {
+    if (dropdown) return dropdown;
+    dropdown = document.createElement('div');
+    dropdown.style.cssText = 'position:absolute;top:100%;left:0;right:0;z-index:9999;background:#1a1e1b;border:1px solid #2a302b;border-top:none;max-height:220px;overflow-y:auto;display:none;';
+    input.parentElement.style.position = 'relative';
+    input.parentElement.appendChild(dropdown);
+    return dropdown;
+  }
+
+  function showSuggestions(predictions) {
+    const dd = getDropdown();
+    dd.innerHTML = '';
+    if (!predictions || !predictions.length) { dd.style.display = 'none'; return; }
+    predictions.forEach(p => {
+      const item = document.createElement('div');
+      item.style.cssText = 'padding:9px 12px;cursor:pointer;font-size:13px;color:#e8ede9;border-bottom:1px solid #2a302b;';
+      const main = p.structured_formatting?.main_text || p.description;
+      const sec  = p.structured_formatting?.secondary_text || '';
+      item.innerHTML = `<span style="color:#f5a623;font-weight:600;">${main}</span><span style="color:#7a8c7d;font-size:11px;margin-left:6px;">${sec}</span>`;
+      item.addEventListener('mousedown', e => {
+        e.preventDefault();
+        input.value = p.description;
+        dd.style.display = 'none';
+        checkReady();
+      });
+      item.addEventListener('mouseover', () => item.style.background = '#2e352f');
+      item.addEventListener('mouseout',  () => item.style.background = '');
+      dd.appendChild(item);
+    });
+    dd.style.display = 'block';
+  }
+
+  input.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    const val = input.value.trim();
+    if (val.length < 3) { if (dropdown) dropdown.style.display = 'none'; checkReady(); return; }
+    debounceTimer = setTimeout(() => {
+      svc.getPlacePredictions({
+        input: val,
+        componentRestrictions: { country: ['us', 'ca'] },
+        types: ['address'],
+      }, (predictions, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK) showSuggestions(predictions);
+        else if (dropdown) dropdown.style.display = 'none';
+      });
+    }, 250);
+    checkReady();
+  });
+
+  input.addEventListener('blur', () => { setTimeout(() => { if (dropdown) dropdown.style.display = 'none'; }, 200); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); if (e.key === 'Escape' && dropdown) dropdown.style.display = 'none'; });
 }
 
 function loadGoogleMapsScript(key) {
