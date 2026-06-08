@@ -68,7 +68,7 @@ INSTRUCTIONS:
 4. If permits specify exact roads to use, use those exact roads
 5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, urban cores)
 6. Include a permit alert for every restriction that affects the driver
-7. The map_waypoints array is CRITICAL — it must list specific intermediate locations along the permit-required route so Google Maps draws the correct path. Include 3-8 waypoints as "City, State" or "Road Name near City, State". These must force Google Maps to follow the permit-required roads, not the fastest route.
+7. The map_waypoints array is CRITICAL — list 4-10 specific intermediate locations along the EXACT permit-required route. Format each as "City, State" (e.g. "Wheeling, WV") or a specific intersection (e.g. "I-70 & I-79, Washington, PA"). These are passed directly to Mapbox routing to draw the precise permitted corridor — be accurate to the actual required roads.
 
 Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
 {
