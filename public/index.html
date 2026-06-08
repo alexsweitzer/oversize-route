@@ -77,7 +77,7 @@
 
   /* MAP CENTER */
   .map-area{background:#0d1a0e;position:relative;overflow:hidden;}
-  #googleMap{width:100%;height:100%;}
+  #mapboxMap{width:100%;height:100%;position:absolute;inset:0;}
   #mapSvg{width:100%;height:100%;}
   .map-info{position:absolute;top:14px;right:14px;background:rgba(8,10,8,.9);border:1px solid var(--border);padding:14px 16px;display:none;}
   .map-info.show{display:block;}
@@ -126,31 +126,6 @@
   .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1c2e1c;color:var(--green);padding:10px 20px;font-size:12px;font-weight:600;display:none;white-space:nowrap;z-index:200;border:1px solid var(--green2);}
   .toast.show{display:block;}
   @media(max-width:900px){.office-layout{grid-template-columns:1fr;}.map-area{min-height:280px;}}
-
-  /* Google Places Autocomplete dropdown dark theme */
-  .pac-container {
-    background:var(--panel) !important;
-    border:1px solid var(--border) !important;
-    border-top:none !important;
-    font-family:'Barlow',sans-serif !important;
-    box-shadow:0 4px 16px rgba(0,0,0,.5) !important;
-  }
-  .pac-item {
-    padding:8px 12px !important;
-    border-top:1px solid var(--border) !important;
-    color:var(--text) !important;
-    font-size:13px !important;
-    cursor:pointer !important;
-  }
-  .pac-item:hover, .pac-item-selected {
-    background:var(--subtle) !important;
-  }
-  .pac-item-query {
-    color:var(--amber) !important;
-    font-size:13px !important;
-  }
-  .pac-matched { color:var(--amber) !important; font-weight:600 !important; }
-  .pac-icon { display:none !important; }
 </style>
 </head>
 <body>
@@ -246,14 +221,14 @@
 
       <!-- Google Maps API key bar (shown until key is set) -->
       <div id="apiKeyBar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:#130d00;border-bottom:1px solid #3a2500;flex-shrink:0;">
-        <span style="font-size:11px;color:var(--amber);white-space:nowrap;">🗝 Maps API Key:</span>
-        <input type="password" id="mapsKeyInput" class="fi" style="flex:1;margin:0;padding:6px 10px;font-family:monospace;font-size:11px;" placeholder="AIzaSy… paste Google Maps key to enable live map"/>
+        <span style="font-size:11px;color:var(--amber);white-space:nowrap;">🗝 Mapbox Token:</span>
+        <input type="password" id="mapsKeyInput" class="fi" style="flex:1;margin:0;padding:6px 10px;font-family:monospace;font-size:11px;" placeholder="pk.eyJ1… paste Mapbox public token"/>
         <button onclick="saveMapsKey()" style="background:var(--amber);color:var(--black);border:none;padding:6px 14px;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:12px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;white-space:nowrap;">Save</button>
       </div>
 
       <div class="map-area" style="flex:1;position:relative;">
-        <!-- Google Map (shown when API key is set) -->
-        <div id="googleMap" style="width:100%;height:100%;display:none;"></div>
+        <!-- Mapbox Map -->
+        <div id="mapboxMap"></div>
         <!-- Fallback SVG (shown when no API key) -->
         <svg id="mapSvg" viewBox="0 0 680 400" preserveAspectRatio="xMidYMid meet" style="width:100%;height:100%;">
           <defs>
@@ -655,93 +630,99 @@ function renderDemoRoute(origin, dest) {
   drawRouteOnMap(origin, dest, wpts2);
 }
 
-// ─── GOOGLE MAPS ──────────────────────────────────────────────────────────────
-let gMap = null, gDirections = null, gMapsKey = '';
+// ─── MAPBOX MAP ──────────────────────────────────────────────────────────────
+let mbMap = null, mbToken = '';
+
+// ─── SUPPRESS GOOGLE MAPS ERROR POPUP ────────────────────────────────────────
+window.gm_authFailure = () => {};
 
 async function fetchConfig() {
   try {
     const res = await fetch('/api/config');
     const cfg = await res.json();
-    if (cfg.googleMapsKey) {
-      gMapsKey = cfg.googleMapsKey;
+    const key = cfg.mapboxToken || cfg.googleMapsKey || '';
+    if (key) {
+      mbToken = key;
       document.getElementById('apiKeyBar').style.display = 'none';
-      // Load Google Maps immediately on boot so it's ready when needed
-      await initGoogleMapsEarly(gMapsKey);
+      initMapbox(mbToken);
     }
   } catch(e) {
-    console.warn('Could not fetch server config:', e.message);
+    console.warn('Could not fetch config:', e.message);
   }
 }
 
 function saveMapsKey() {
   const val = document.getElementById('mapsKeyInput').value.trim();
-  if (!val || !val.startsWith('AIza')) { showToast('⚠ Enter a valid Google Maps API key (starts with AIza)'); return; }
-  gMapsKey = val;
+  if (!val) { showToast('⚠ Enter your Mapbox public token'); return; }
+  mbToken = val;
   document.getElementById('apiKeyBar').style.display = 'none';
-  initGoogleMapsEarly(gMapsKey);
-  showToast('✓ Maps key set');
+  initMapbox(mbToken);
+  showToast('✓ Mapbox token saved');
 }
 
 function getMapsKey() {
-  return gMapsKey || document.getElementById('mapsKeyInput').value.trim();
+  return mbToken || document.getElementById('mapsKeyInput').value.trim();
 }
 
-// Load the Maps JS library and initialize the map div early
-async function initGoogleMapsEarly(key) {
+function loadMapboxScript() {
+  return new Promise((resolve, reject) => {
+    if (window.mapboxgl) { resolve(); return; }
+    // Load Mapbox GL JS CSS
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css';
+    document.head.appendChild(link);
+    // Load Mapbox GL JS
+    const s = document.createElement('script');
+    s.src = 'https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+async function initMapbox(token) {
   try {
-    await loadGoogleMapsScript(key);
-    const mapEl = document.getElementById('googleMap');
+    await loadMapboxScript();
+    mapboxgl.accessToken = token;
+
+    const mapEl = document.getElementById('mapboxMap');
     mapEl.style.display = 'block';
     document.getElementById('mapSvg').style.display = 'none';
 
-    const mapStyles = [
-      {elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
-      {elementType:'labels.text.fill',stylers:[{color:'#6b7d6e'}]},
-      {elementType:'labels.text.stroke',stylers:[{color:'#0a120a'}]},
-      {featureType:'road',elementType:'geometry',stylers:[{color:'#1e3a22'}]},
-      {featureType:'road.highway',elementType:'geometry',stylers:[{color:'#2a5030'}]},
-      {featureType:'road',elementType:'labels.text.fill',stylers:[{color:'#7a9a7d'}]},
-      {featureType:'water',elementType:'geometry',stylers:[{color:'#071a0a'}]},
-      {featureType:'poi',stylers:[{visibility:'off'}]},
-      {featureType:'transit',stylers:[{visibility:'off'}]},
-      {featureType:'landscape',elementType:'geometry',stylers:[{color:'#0d1a0e'}]},
-    ];
-
-    gMap = new google.maps.Map(mapEl, {
-      center: {lat: 39.5, lng: -80.0},
-      zoom: 6,
-      styles: mapStyles,
-      disableDefaultUI: true,
-      gestureHandling: 'cooperative',
+    mbMap = new mapboxgl.Map({
+      container: 'mapboxMap',
+      style: 'mapbox://styles/mapbox/dark-v11',
+      center: [-80.0, 39.5],
+      zoom: 5,
+      attributionControl: false,
     });
 
-    // Wire up Places Autocomplete on both address inputs
-    initAutocomplete();
+    mbMap.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
+
+    // Init address autocomplete once map is ready
+    mbMap.on('load', () => {
+      initAddressAutocomplete();
+    });
+
   } catch(e) {
-    console.warn('Could not initialize Google Maps:', e.message);
+    console.warn('Mapbox init failed:', e.message);
+    drawSvgRoute();
   }
 }
 
-function initAutocomplete() {
-  if (!window.google || !window.google.maps || !window.google.maps.places) {
-    console.warn('Places API not available');
-    return;
-  }
-  try {
-    attachAutocomplete('originAddr');
-    attachAutocomplete('destAddr');
-  } catch(e) {
-    console.warn('Autocomplete init failed:', e.message);
-  }
+// ─── ADDRESS AUTOCOMPLETE (Mapbox Geocoding) ──────────────────────────────────
+function initAddressAutocomplete() {
+  attachMapboxAutocomplete('originAddr');
+  attachMapboxAutocomplete('destAddr');
 }
 
-function attachAutocomplete(inputId) {
+function attachMapboxAutocomplete(inputId) {
   const input = document.getElementById(inputId);
   if (!input) return;
 
-  const svc = new google.maps.places.AutocompleteService();
   let dropdown = null;
-  let debounceTimer = null;
+  let timer = null;
 
   function getDropdown() {
     if (dropdown) return dropdown;
@@ -752,213 +733,170 @@ function attachAutocomplete(inputId) {
     return dropdown;
   }
 
-  function showSuggestions(predictions) {
-    const dd = getDropdown();
-    dd.innerHTML = '';
-    if (!predictions || !predictions.length) { dd.style.display = 'none'; return; }
-    predictions.forEach(p => {
-      const item = document.createElement('div');
-      item.style.cssText = 'padding:9px 12px;cursor:pointer;font-size:13px;color:#e8ede9;border-bottom:1px solid #2a302b;';
-      const main = p.structured_formatting?.main_text || p.description;
-      const sec  = p.structured_formatting?.secondary_text || '';
-      item.innerHTML = `<span style="color:#f5a623;font-weight:600;">${main}</span><span style="color:#7a8c7d;font-size:11px;margin-left:6px;">${sec}</span>`;
-      item.addEventListener('mousedown', e => {
-        e.preventDefault();
-        input.value = p.description;
-        dd.style.display = 'none';
-        checkReady();
-      });
-      item.addEventListener('mouseover', () => item.style.background = '#2e352f');
-      item.addEventListener('mouseout',  () => item.style.background = '');
-      dd.appendChild(item);
-    });
-    dd.style.display = 'block';
-  }
-
   input.addEventListener('input', () => {
-    clearTimeout(debounceTimer);
+    clearTimeout(timer);
     const val = input.value.trim();
     if (val.length < 3) { if (dropdown) dropdown.style.display = 'none'; checkReady(); return; }
-    debounceTimer = setTimeout(() => {
-      svc.getPlacePredictions({
-        input: val,
-        componentRestrictions: { country: ['us', 'ca'] },
-        types: ['address'],
-      }, (predictions, status) => {
-        if (status === google.maps.places.PlacesServiceStatus.OK) showSuggestions(predictions);
-        else if (dropdown) dropdown.style.display = 'none';
-      });
+    timer = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(val)}.json?` +
+          `access_token=${mbToken}&country=US,CA&types=address,place&limit=5`
+        );
+        const data = await res.json();
+        const dd = getDropdown();
+        dd.innerHTML = '';
+        (data.features || []).forEach(f => {
+          const item = document.createElement('div');
+          item.style.cssText = 'padding:9px 12px;cursor:pointer;font-size:13px;color:#e8ede9;border-bottom:1px solid #2a302b;';
+          const parts = f.place_name.split(',');
+          item.innerHTML = `<span style="color:#f5a623;font-weight:600;">${parts[0]}</span><span style="color:#7a8c7d;font-size:11px;margin-left:6px;">${parts.slice(1).join(',').trim()}</span>`;
+          item.addEventListener('mousedown', e => {
+            e.preventDefault();
+            input.value = f.place_name;
+            dd.style.display = 'none';
+            checkReady();
+          });
+          item.addEventListener('mouseover', () => item.style.background = '#2e352f');
+          item.addEventListener('mouseout',  () => item.style.background = '');
+          dd.appendChild(item);
+        });
+        dd.style.display = data.features?.length ? 'block' : 'none';
+      } catch(e) { console.warn('Geocoding error:', e); }
     }, 250);
     checkReady();
   });
 
-  input.addEventListener('blur', () => { setTimeout(() => { if (dropdown) dropdown.style.display = 'none'; }, 200); });
+  input.addEventListener('blur',    () => setTimeout(() => { if (dropdown) dropdown.style.display = 'none'; }, 200));
   input.addEventListener('keydown', e => { if (e.key === 'Enter') e.preventDefault(); if (e.key === 'Escape' && dropdown) dropdown.style.display = 'none'; });
 }
 
-function loadGoogleMapsScript(key) {
-  return new Promise((resolve, reject) => {
-    if (window.google && window.google.maps) { resolve(); return; }
+// ─── DRAW ROUTE ON MAPBOX ─────────────────────────────────────────────────────
+async function drawRouteOnMap(origin, dest, permitWaypoints) {
+  const token = getMapsKey();
+  if (!token) { drawSvgRoute(); return; }
 
-    // Suppress the error popup — handle auth failures ourselves
-    window.gm_authFailure = () => {
-      console.warn('Google Maps auth failed — Places autocomplete disabled');
-      // Don't reject — let the map still work without autocomplete
-      resolve();
-    };
+  if (!mbMap) {
+    await initMapbox(token);
+    await new Promise(r => mbMap.on('load', r));
+  }
 
-    window._mapsReady = resolve;
-    const s = document.createElement('script');
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry,places&callback=_mapsReady`;
-    s.async = true;
-    s.onerror = () => {
-      console.warn('Maps script failed to load');
-      reject(new Error('Maps script failed'));
-    };
-    document.head.appendChild(s);
-  });
-}
+  try {
+    // Geocode origin and destination to coordinates
+    const [originCoords, destCoords] = await Promise.all([
+      geocode(origin, token),
+      geocode(dest, token),
+    ]);
 
-// ─── EXTRACT WAYPOINTS FROM AI STEPS FOR GOOGLE MAPS ─────────────────────────
-function extractMapWaypointsFromSteps(steps, origin, dest) {
-  if (!steps || steps.length < 3) return [];
-
-  const waypoints = [];
-  const middle = steps.slice(1, -1); // skip first and last
-
-  // Prioritize steps with permit restrictions — these are the mandatory roads
-  const permitSteps = middle.filter(s => s.note || s.permit);
-  const turnSteps   = middle.filter(s => ['right','left','merge','exit'].includes(s.dir));
-
-  const priority = [...permitSteps];
-  turnSteps.forEach(s => { if (!priority.includes(s)) priority.push(s); });
-  const selected = priority.slice(0, 8); // Google Maps max 8 waypoints
-
-  selected.forEach(s => {
-    // Best case: AI provided a location field
-    if (s.location && s.location.length > 3 && !s.location.includes('[')) {
-      waypoints.push(s.location);
+    if (!originCoords || !destCoords) {
+      showToast('⚠ Could not geocode addresses');
       return;
     }
 
-    // Extract road + location from step text
-    const text = (s.text || '').replace(/<[^>]+>/g, '').trim();
-
-    // Try to pull highway number: "onto I-70 W", "on US-50", "via I-595"
-    const roadMatch = text.match(
-      /(?:onto|on|via|toward|along)\s+([A-Z]{1,3}[-\s]?\d+[\w\s\-\/]*?)(?:\s+via|\s+toward|\s+at|\s+\(|,|\band\b|$)/i
-    );
-
-    if (roadMatch) {
-      const road = roadMatch[1].trim();
-      // Try to extract city/state from text like "...through Wheeling, WV"
-      const cityMatch = text.match(/(?:through|in|near|at)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),?\s*([A-Z]{2})/);
-      if (cityMatch) {
-        waypoints.push(`${road} near ${cityMatch[1]}, ${cityMatch[2]}`);
-      } else if (road.length > 2) {
-        waypoints.push(road);
-      }
-    }
-  });
-
-  // Deduplicate
-  return [...new Set(waypoints)];
-}
-
-async function drawRouteOnMap(origin, dest, permitWaypoints) {
-  const key = getMapsKey();
-  if (!key) { drawSvgRoute(); return; }
-
-  try {
-    // Ensure maps is loaded and map is initialized
-    if (!window.google || !window.google.maps) {
-      await initGoogleMapsEarly(key);
-    }
-    if (!gMap) {
-      await initGoogleMapsEarly(key);
+    // Geocode permit waypoints to coordinates
+    const waypointCoords = [];
+    for (const wp of permitWaypoints.filter(w => w.trim()).slice(0, 24)) {
+      const coords = await geocode(wp, token);
+      if (coords) waypointCoords.push(coords);
     }
 
-    // Small delay to ensure map container is rendered and sized
-    await new Promise(r => setTimeout(r, 200));
-    google.maps.event.trigger(gMap, 'resize');
+    // Build Mapbox Directions URL with all coordinates
+    // Using Map Matching approach: pass all points as coordinates
+    const allCoords = [originCoords, ...waypointCoords, destCoords];
+    const coordStr  = allCoords.map(c => c.join(',')).join(';');
 
-    // Clear any existing route
-    if (gDirections) {
-      gDirections.setMap(null);
-      gDirections = null;
+    // Use Mapbox Directions API with full coordinate list
+    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
+      `access_token=${token}&geometries=geojson&overview=full&steps=true`;
+
+    const res  = await fetch(url);
+    const data = await res.json();
+
+    if (!data.routes || !data.routes.length) {
+      showToast('⚠ Mapbox routing failed — check waypoints');
+      return;
     }
 
-    gDirections = new google.maps.DirectionsRenderer({
-      map: gMap,
-      suppressMarkers: false,
-      polylineOptions: {
-        strokeColor: '#f5a623',
-        strokeWeight: 6,
-        strokeOpacity: 0.9,
-      },
+    const route    = data.routes[0];
+    const geometry = route.geometry; // GeoJSON LineString
+
+    // Remove existing route layers if present
+    ['permit-route-line','permit-route-casing','permit-route-arrows'].forEach(id => {
+      if (mbMap.getLayer(id)) mbMap.removeLayer(id);
+    });
+    if (mbMap.getSource('permit-route')) mbMap.removeSource('permit-route');
+
+    // Add route source
+    mbMap.addSource('permit-route', { type: 'geojson', data: { type: 'Feature', geometry } });
+
+    // Outer glow/casing
+    mbMap.addLayer({
+      id: 'permit-route-casing',
+      type: 'line',
+      source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#b87a18', 'line-width': 10, 'line-opacity': 0.4 },
     });
 
-    const svc = new google.maps.DirectionsService();
-
-    // Try route with waypoints first, fall back to direct if it fails
-    const tryRoute = (wpts) => new Promise((resolve) => {
-      svc.route({
-        origin,
-        destination: dest,
-        waypoints: wpts,
-        travelMode: google.maps.TravelMode.DRIVING,
-        optimizeWaypoints: false,
-      }, (result, status) => resolve({ result, status }));
+    // Main route line — amber
+    mbMap.addLayer({
+      id: 'permit-route-line',
+      type: 'line',
+      source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 5, 'line-opacity': 0.95 },
     });
 
-    const wpts = permitWaypoints
-      .filter(w => w.trim())
-      .slice(0, 8)
-      .map(w => ({ location: w.trim(), stopover: true })); // force route through permit-required points
+    // Add start/end markers
+    ['permit-start','permit-end'].forEach(id => {
+      const existing = document.getElementById(id);
+      if (existing) existing.remove();
+    });
 
-    let { result, status } = await tryRoute(wpts);
+    addMarker(originCoords, '#f5a623', 'A', 'permit-start');
+    addMarker(destCoords,   '#3ddc84', 'B', 'permit-end');
 
-    // If waypoints caused an error, retry without them
-    if (status !== 'OK' && wpts.length > 0) {
-      console.warn('Route with waypoints failed:', status, '— retrying direct');
-      ({ result, status } = await tryRoute([]));
-    }
-
-    if (status === 'OK') {
-      gDirections.setDirections(result);
-      gMap.fitBounds(result.routes[0].bounds, 60);
-    } else {
-      console.warn('Directions API failed:', status);
-      showToast('⚠ Map route unavailable (' + status + ') — turn-by-turn steps still correct');
-    }
+    // Fit map to route
+    const coords = geometry.coordinates;
+    const bounds = coords.reduce((b, c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+    mbMap.fitBounds(bounds, { padding: 60, duration: 1000 });
 
   } catch(e) {
-    console.warn('Google Maps error:', e.message);
-    drawSvgRoute();
+    console.warn('Mapbox routing error:', e.message);
+    showToast('⚠ Map routing error: ' + e.message);
   }
 }
 
+function addMarker(coords, color, label, id) {
+  const el = document.createElement('div');
+  el.id = id;
+  el.style.cssText = `width:28px;height:28px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;cursor:pointer;`;
+  const txt = document.createElement('span');
+  txt.style.cssText = 'transform:rotate(45deg);color:#000;font-weight:800;font-size:11px;font-family:Barlow Condensed,sans-serif;';
+  txt.textContent = label;
+  el.appendChild(txt);
+  new mapboxgl.Marker({ element: el }).setLngLat(coords).addTo(mbMap);
+}
+
+async function geocode(address, token) {
+  try {
+    const res  = await fetch(`https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&country=US,CA&limit=1`);
+    const data = await res.json();
+    if (data.features && data.features.length) return data.features[0].center; // [lng, lat]
+  } catch(e) {}
+  return null;
+}
+
 function drawSvgRoute() {
-  // Fallback static map shown when no Google Maps key
   const svg = document.getElementById('mapSvg');
-  document.getElementById('googleMap').style.display = 'none';
+  if (mbMap) return; // Mapbox is active, don't show SVG
+  document.getElementById('mapboxMap').style.display = 'none';
   svg.style.display = 'block';
   svg.innerHTML = `
     <defs><pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0L0 0 0 40" fill="none" stroke="#192b1a" stroke-width="0.5"/></pattern></defs>
-    <rect width="680" height="400" fill="#0d1a0e"/>
-    <rect width="680" height="400" fill="url(#grid)"/>
-    <line x1="0" y1="195" x2="680" y2="195" stroke="#1e3a22" stroke-width="10"/>
-    <line x1="340" y1="0" x2="340" y2="400" stroke="#1e3a22" stroke-width="10"/>
-    <polyline points="60,320 60,195 200,195 200,130 340,130 340,195 520,195 620,270"
-      fill="none" stroke="rgba(245,166,35,0.2)" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
-    <polyline points="60,320 60,195 200,195 200,130 340,130 340,195 520,195 620,270"
-      fill="none" stroke="#f5a623" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="12,5"/>
-    <circle cx="60" cy="320" r="9" fill="#f5a623"/>
-    <text x="75" y="318" fill="#f5a623" font-size="11" font-family="sans-serif" font-weight="700">START</text>
-    <circle cx="620" cy="270" r="9" fill="#3ddc84"/>
-    <text x="572" y="288" fill="#3ddc84" font-size="11" font-family="sans-serif" font-weight="700">END</text>
-    <text x="340" y="380" fill="#2a302b" font-family="Barlow,sans-serif" font-size="11" text-anchor="middle">Add Google Maps API key above for live map</text>
-  `;
+    <rect width="680" height="400" fill="#0d1a0e"/><rect width="680" height="400" fill="url(#grid)"/>
+    <text x="340" y="190" fill="#2a302b" font-family="Barlow Condensed,sans-serif" font-size="16" font-weight="700" text-anchor="middle" letter-spacing="3">ENTER ROUTE DETAILS</text>
+    <text x="340" y="212" fill="#2a302b" font-family="Barlow,sans-serif" font-size="12" text-anchor="middle">Add Mapbox token to enable live map</text>`;
 }
 
 // ─── SEND TO DRIVER ───────────────────────────────────────────────────────────
