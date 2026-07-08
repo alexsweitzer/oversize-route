@@ -923,6 +923,7 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
 // along the corridor. Drops far-flung outliers from bad geocodes.
 function filterOutliers(origin, points, dest) {
   if (!points.length) return [];
+
   function dist(a, b) {
     const R = 3958.8;
     const dLat = (b[1]-a[1]) * Math.PI/180;
@@ -932,28 +933,42 @@ function filterOutliers(origin, points, dest) {
     return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
   }
 
+  // Project a point onto the origin→dest axis.
+  // Returns {along: 0..1+ progress toward dest, off: lateral distance in miles}
+  const ax = dest[0] - origin[0];
+  const ay = dest[1] - origin[1];
+  const axisLenSq = ax*ax + ay*ay;
   const totalTripDist = dist(origin, dest);
-  const maxJump = Math.max(totalTripDist * 0.5, 100);
+
+  function project(p) {
+    const px = p[0] - origin[0];
+    const py = p[1] - origin[1];
+    const t = axisLenSq > 0 ? (px*ax + py*ay) / axisLenSq : 0;
+    // closest point on axis
+    const cx = origin[0] + t*ax, cy = origin[1] + t*ay;
+    const off = dist(p, [cx, cy]);
+    return { along: t, off };
+  }
+
+  // Corridor rules:
+  //  - lateral offset from the straight line must be < 35% of trip length
+  //    (permit routes wander, but not wildly off-corridor)
+  //  - progression 'along' must be monotonic within a small tolerance
+  //    (allows local zigzags, rejects big backtracks)
+  const maxOff = totalTripDist * 0.35;
+  const backTolerance = 0.06; // allow 6% backward slip for real-world jogs
 
   const kept = [];
-  let prev = origin;
-  let prevRemaining = dist(origin, dest); // distance from prev to destination
+  let lastAlong = 0;
 
   for (const p of points) {
-    const jump = dist(prev, p);
-    const remaining = dist(p, dest);
-
-    // Reject if: (a) it jumps too far from the last good point, OR
-    // (b) it moves us significantly FARTHER from the destination (a backtrack)
-    const isBigJump   = jump > maxJump;
-    const isBacktrack = remaining > prevRemaining + (totalTripDist * 0.15);
-
-    if (!isBigJump && !isBacktrack) {
+    const { along, off } = project(p);
+    const offOk   = off <= maxOff;
+    const alongOk = along >= lastAlong - backTolerance && along <= 1.15;
+    if (offOk && alongOk) {
       kept.push(p);
-      prev = p;
-      prevRemaining = remaining;
+      lastAlong = Math.max(lastAlong, along);
     }
-    // else: skip this point, keep prev as the anchor
   }
   return kept;
 }
@@ -1402,29 +1417,25 @@ function drawGeometry(geometry) {
   if (hint) hint.style.display = 'block';
 }
 
+let endpointMarkers = [];
+
 function placeEndpointMarkers() {
-  ['permit-start','permit-end'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.parentElement?.remove(); // remove marker wrapper
-  });
-  if (routeOriginCoords) addMarker(routeOriginCoords, '#f5a623', 'A', 'permit-start');
-  if (routeDestCoords)   addMarker(routeDestCoords,   '#3ddc84', 'B', 'permit-end');
+  // Remove old markers properly via their Mapbox instances
+  endpointMarkers.forEach(m => m.remove());
+  endpointMarkers = [];
+  if (routeOriginCoords) endpointMarkers.push(addMarker(routeOriginCoords, '#f5a623', 'A'));
+  if (routeDestCoords)   endpointMarkers.push(addMarker(routeDestCoords,   '#3ddc84', 'B'));
 }
 
-function addMarker(coords, color, label, id) {
-  // Outer element positioned by Mapbox; inner element holds the rotated pin.
-  // This prevents our rotate() transform from fighting Mapbox's positioning.
-  const wrap = document.createElement('div');
-  wrap.id = id;
-  const pin = document.createElement('div');
-  pin.style.cssText = `width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);`;
-  const txt = document.createElement('span');
-  txt.style.cssText = 'transform:rotate(45deg);color:#000;font-weight:800;font-size:11px;font-family:Barlow Condensed,sans-serif;';
-  txt.textContent = label;
-  pin.appendChild(txt);
-  wrap.appendChild(pin);
-  // anchor:'bottom' pins the tip of the marker to the coordinate correctly
-  new mapboxgl.Marker({ element: wrap, anchor: 'bottom' }).setLngLat(coords).addTo(mbMap);
+function addMarker(coords, color, label) {
+  // Simple center-anchored dot — cannot drift on zoom
+  const el = document.createElement('div');
+  el.style.cssText = `width:24px;height:24px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;color:#000;font-weight:800;font-size:12px;font-family:Barlow Condensed,sans-serif;`;
+  el.textContent = label;
+  const marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+    .setLngLat(coords)
+    .addTo(mbMap);
+  return marker;
 }
 
 async function geocode(address, token) {
