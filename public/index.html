@@ -860,13 +860,15 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
   try {
     showToast('\ud83d\udccd Resolving permit roads via HERE\u2026');
 
-    // 1. Geocode origin + destination via HERE
-    const [oCoords, dCoords] = await Promise.all([hereGeocode(origin), hereGeocode(dest)]);
-    if (!oCoords || !dCoords) { showToast('\u26a0 Could not geocode addresses'); return; }
+    // 1. Geocode origin + destination via HERE (these return {coord,...})
+    const [oRes, dRes] = await Promise.all([hereGeocode(origin), hereGeocode(dest)]);
+    const oCoords = oRes && oRes.coord;
+    const dCoords = dRes && dRes.coord;
+    if (!oCoords || !dCoords) { showToast('Could not geocode addresses'); return; }
     routeOriginCoords = oCoords;
     routeDestCoords   = dCoords;
 
-    // 2. Resolve each leg interchange via HERE geocoder (state-constrained)
+    // 2. Resolve each leg interchange via HERE geocoder (quality-filtered)
     showToast(`Locating ${legs.length} permit road points...`);
     const rawLegCoords = [];
     const BATCH = 8;
@@ -874,25 +876,23 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
     for (let i = 0; i < legs.length; i += BATCH) {
       const batch = legs.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(leg => hereGeocodeLeg(leg)));
-      results.forEach((c, j) => {
-        if (c) { rawLegCoords.push(c); resolved++; }
-        else { failed++; if (failed <= 3) console.warn('Failed to geocode leg:', batch[j].road, batch[j].to, batch[j].state); }
+      results.forEach((r, j) => {
+        if (r && r.coord) { rawLegCoords.push(r.coord); resolved++; }
+        else { failed++; }
       });
     }
     console.log(`Geocoding: ${resolved} resolved, ${failed} failed out of ${legs.length} legs`);
 
     if (rawLegCoords.length === 0) {
       showToast('Could not resolve permit roads — check console');
-      console.error('ZERO legs geocoded. HERE key issue or query format problem.');
-      // Diagnostic: test a simple known geocode
-      const testCoord = await hereGeocode('Hagerstown, Maryland', null);
-      console.log('Diagnostic geocode "Hagerstown, Maryland":', testCoord);
+      const test = await hereGeocode('Hagerstown, Maryland', null);
+      console.log('Diagnostic geocode Hagerstown MD:', test);
       return;
     }
 
     // 3. ANTI-SPIDERWEB FILTER: drop points that jump unreasonably far
     const filtered = filterOutliers(oCoords, rawLegCoords, dCoords);
-    console.log(`Geocoded ${rawLegCoords.length} legs, kept ${filtered.length} after filter`);
+    console.log(`Geocoded ${rawLegCoords.length} legs, kept ${filtered.length} after outlier filter`);
 
     // 4. Build full ordered point list
     const allPoints = [oCoords, ...filtered, dCoords];
@@ -931,12 +931,29 @@ function filterOutliers(origin, points, dest) {
     const x = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
     return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
   }
+
   const totalTripDist = dist(origin, dest);
-  const maxJump = Math.max(totalTripDist * 0.6, 120);
+  const maxJump = Math.max(totalTripDist * 0.5, 100);
+
   const kept = [];
   let prev = origin;
+  let prevRemaining = dist(origin, dest); // distance from prev to destination
+
   for (const p of points) {
-    if (dist(prev, p) <= maxJump) { kept.push(p); prev = p; }
+    const jump = dist(prev, p);
+    const remaining = dist(p, dest);
+
+    // Reject if: (a) it jumps too far from the last good point, OR
+    // (b) it moves us significantly FARTHER from the destination (a backtrack)
+    const isBigJump   = jump > maxJump;
+    const isBacktrack = remaining > prevRemaining + (totalTripDist * 0.15);
+
+    if (!isBigJump && !isBacktrack) {
+      kept.push(p);
+      prev = p;
+      prevRemaining = remaining;
+    }
+    // else: skip this point, keep prev as the anchor
   }
   return kept;
 }
@@ -959,21 +976,38 @@ const STATE_BOUNDS = {
 const STATE_NAMES = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
   VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
 
-// Plain HERE geocode (address → [lng,lat]).
-// Uses countryCode constraint (bbox isn't valid on /geocode endpoint).
+// HERE geocode returning {coord, score, resultType}. Constrained to a state bbox.
 async function hereGeocode(address, bbox) {
   try {
     let url = `https://geocode.search.hereapi.com/v1/geocode` +
       `?q=${encodeURIComponent(address)}` +
       `&in=countryCode:USA` +
+      `&limit=5` +
       `&apiKey=${hereKey}`;
     const res = await fetch(url);
     const data = await res.json();
-    if (data.items && data.items.length) {
-      const p = data.items[0].position;
-      return [p.lng, p.lat];
+    if (!data.items || !data.items.length) return null;
+
+    // Pick the best item that falls inside the target bbox (if given)
+    let best = null;
+    for (const item of data.items) {
+      const p = item.position;
+      const coord = [p.lng, p.lat];
+      if (bbox) {
+        const pad = 0.3;
+        const inBox = p.lng >= bbox[0]-pad && p.lng <= bbox[2]+pad &&
+                      p.lat >= bbox[1]-pad && p.lat <= bbox[3]+pad;
+        if (!inBox) continue;
+      }
+      // First in-box result is HERE's highest-ranked → take it
+      best = {
+        coord,
+        score: item.scoring?.queryScore ?? 0,
+        resultType: item.resultType || '',
+      };
+      break;
     }
-    return null;
+    return best;
   } catch(e) {
     console.warn('HERE geocode error for', address, ':', e.message);
     return null;
@@ -989,7 +1023,8 @@ function inStateBounds(coord, state) {
   return lng >= b[0]-pad && lng <= b[2]+pad && lat >= b[1]-pad && lat <= b[3]+pad;
 }
 
-// Geocode a permit leg. Tries several query forms, with and without bbox.
+// Geocode a permit leg with strict quality filtering.
+// Returns {coord, score, resultType} or null. Rejects low-confidence matches.
 async function hereGeocodeLeg(leg) {
   const road  = leg.road || '';
   const to    = leg.to || '';
@@ -997,22 +1032,29 @@ async function hereGeocodeLeg(leg) {
   const sn    = STATE_NAMES[state] || state;
   const bbox  = STATE_BOUNDS[state];
 
-  // Query forms from most to least specific
+  // Query forms, most specific first
   const queries = [];
-  if (to && road) queries.push(`${road} and ${to}, ${sn}`);
+  if (to && road) queries.push(`${road} at ${to}, ${sn}`);
   if (to && road) queries.push(`${road} ${to}, ${sn}`);
+  if (road && to) queries.push(`${to}, ${sn}`);
   if (road)       queries.push(`${road}, ${sn}`);
-  if (to)         queries.push(`${to}, ${sn}`);
 
-  // Try each query WITH bbox first, then WITHOUT bbox as fallback
+  const candidates = [];
   for (const q of queries) {
-    let c = await hereGeocode(q, bbox);
-    if (c && inStateBounds(c, state)) return c;
-    // fallback without bbox but still validate against state bounds
-    c = await hereGeocode(q, null);
-    if (c && inStateBounds(c, state)) return c;
+    const r = await hereGeocode(q, bbox);
+    if (r && r.coord) {
+      candidates.push(r);
+      // Strong match on a specific query — take it immediately
+      if (r.score >= 0.85) return r;
+    }
   }
-  return null;
+  // Otherwise return the best-scoring candidate we found (if any decent one)
+  if (candidates.length) {
+    candidates.sort((a,b) => b.score - a.score);
+    // Only accept if the best is at least a moderate match
+    if (candidates[0].score >= 0.5) return candidates[0];
+  }
+  return null; // nothing trustworthy — skip this leg
 }
 
 // HERE Routing — trace exact roads through points, stitch geometry
@@ -1370,14 +1412,19 @@ function placeEndpointMarkers() {
 }
 
 function addMarker(coords, color, label, id) {
-  const el = document.createElement('div');
-  el.id = id;
-  el.style.cssText = `width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);`;
+  // Outer element positioned by Mapbox; inner element holds the rotated pin.
+  // This prevents our rotate() transform from fighting Mapbox's positioning.
+  const wrap = document.createElement('div');
+  wrap.id = id;
+  const pin = document.createElement('div');
+  pin.style.cssText = `width:26px;height:26px;border-radius:50% 50% 50% 0;background:${color};border:2px solid #fff;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.4);`;
   const txt = document.createElement('span');
   txt.style.cssText = 'transform:rotate(45deg);color:#000;font-weight:800;font-size:11px;font-family:Barlow Condensed,sans-serif;';
   txt.textContent = label;
-  el.appendChild(txt);
-  new mapboxgl.Marker({ element: el }).setLngLat(coords).addTo(mbMap);
+  pin.appendChild(txt);
+  wrap.appendChild(pin);
+  // anchor:'bottom' pins the tip of the marker to the coordinate correctly
+  new mapboxgl.Marker({ element: wrap, anchor: 'bottom' }).setLngLat(coords).addTo(mbMap);
 }
 
 async function geocode(address, token) {
