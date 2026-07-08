@@ -122,8 +122,10 @@ router.post('/:id/analyze', requireAuth, async (req, res) => {
       [route.id]
     );
 
-    // Mark as analyzing
-    await query('UPDATE routes SET status=$1 WHERE id=$2', ['analyzing', route.id]);
+    // Mark as analyzing — reuse 'draft' status (allowed by constraint),
+    // track analysis state in ai_analysis field instead
+    await query(`UPDATE routes SET status='draft', ai_analysis=$1 WHERE id=$2`,
+      [JSON.stringify({ _analyzing: true }), route.id]);
 
     // Respond IMMEDIATELY so Railway's 60s gateway timeout is never hit
     res.json({ status: 'analyzing', route_id: route.id });
@@ -169,9 +171,9 @@ async function runAnalysisInBackground(route, permits, userId) {
       `AI analysis complete — ${analysis.steps.length} steps`);
   } catch (err) {
     console.error('Background analysis error:', err);
-    // Mark as errored so the frontend can show the failure
-    await query(`UPDATE routes SET status='error', ai_analysis=$1 WHERE id=$2`,
-      [JSON.stringify({ error: err.message }), route.id]).catch(()=>{});
+    // Keep status as 'draft' but record the error in ai_analysis
+    await query(`UPDATE routes SET status='draft', ai_analysis=$1 WHERE id=$2`,
+      [JSON.stringify({ _error: err.message }), route.id]).catch(()=>{});
   }
 }
 
@@ -184,15 +186,16 @@ router.get('/:id/analyze-status', requireAuth, async (req, res) => {
     );
     if (!route) return res.status(404).json({ error: 'Route not found' });
 
-    if (route.status === 'ready') {
+    const ai = route.ai_analysis || {};
+
+    if (route.status === 'ready' && !ai._analyzing) {
       // Analysis complete — return full result
       res.json({ status: 'ready', route, analysis: route.ai_analysis });
-    } else if (route.status === 'error') {
-      const errMsg = route.ai_analysis?.error || 'Analysis failed';
-      res.json({ status: 'error', error: errMsg });
+    } else if (ai._error) {
+      res.json({ status: 'error', error: ai._error });
     } else {
       // Still analyzing
-      res.json({ status: route.status || 'analyzing' });
+      res.json({ status: 'analyzing' });
     }
   } catch (err) {
     console.error('Status check error:', err);
