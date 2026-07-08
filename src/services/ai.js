@@ -55,61 +55,38 @@ async function extractRouteLegs(route, permits) {
     .map(p => `########## ${p.state} PERMIT ##########\n${p.text}`)
     .join('\n\n');
 
-  const prompt = `You are an oversized-load permit routing parser. Extract the EXACT legally-required route from these state permits.
+  const prompt = `Extract the exact legally-required route from these oversized-load permits. Output compact JSON only.
 
-TRIP:
-- True Origin: ${route.origin_address}
-- True Destination: ${route.dest_address}
+TRIP: ${route.origin_address} → ${route.dest_address}
 
-PERMITS (full text, one per state):
+PERMITS:
 ${permitBlock}
 
-TASK:
-Each state permit contains an authorized/required route — a specific ordered list of highways, exits, and directions the driver MUST follow. Extract these EXACTLY as written. Do not invent, optimize, or substitute roads.
+Each permit has an authorized route (ordered highways/exits the driver MUST follow). Find it:
+- OHIO: "Via" line or ROUTING table
+- PA: "Authorized Route" leg table
+- MD: "Authorized Route:" line
+- WV: route description (START...END)
+- MI: "Directions:" line
 
-For each state, find the route section:
-- OHIO: look for "ROUTING AND SPECIAL INSTRUCTIONS" table OR the "Via" line — extract every road/exit in order
-- PENNSYLVANIA: look for "Authorized Route" table with Leg/Route/Dir columns
-- MARYLAND: look for "Authorized Route:" line (START ON ... END ON ...)
-- WEST VIRGINIA: look for the route description (START ON ... END ON ...)
-- MICHIGAN: look for "Directions:" line (START ON ... END ON ...)
+Order legs in travel sequence (MD→WV→PA→OH→MI). Extract EVERY road segment exactly.
 
-Return ONLY valid JSON (no markdown, no preamble):
+Output ONLY this JSON (no markdown):
 {
-  "states_in_order": ["MD","WV","PA","OH","MI"],
-  "legs": [
-    {
-      "seq": 1,
-      "state": "MD",
-      "road": "MD-8",
-      "direction": "N",
-      "from": "Emory Cir, Stevensville",
-      "to": "US-50 Exit 37",
-      "raw": "START ON MD-8 NB(IN STEVENSVILLE AT EMORY CIR)"
-    }
-  ],
-  "permit_start": "MD-8 NB at Emory Cir, Stevensville, MD",
-  "permit_end": "US-10 at MP Mason 9.37, Ludington, MI",
-  "alerts": [
-    { "state": "MD", "message": "Notify Bay Bridge 410-537-7911 one hour prior to crossing" }
-  ]
+"states_in_order":["MD","WV","PA","OH","MI"],
+"legs":[
+{"seq":1,"state":"MD","road":"MD-8","direction":"N","to":"US-50 Exit 37","raw":"MD-8 NB(EMORY CIR)"}
+],
+"permit_start":"MD-8 at Emory Cir, Stevensville MD",
+"permit_end":"US-10 at Mason MP9.37, Ludington MI",
+"alerts":[{"state":"MD","message":"Notify Bay Bridge 410-537-7911 1hr prior"}]
 }
 
-RULES:
-- Order legs in actual travel sequence from origin state to destination state (MD → WV → PA → OH → MI for this trip)
-- Extract EVERY road segment — do not skip or summarize
-- "road" = the highway designation exactly as written (I-70, US-40, SR-149, MD-8, etc.)
-- "direction" = N/S/E/W if given (from NB/SB/EB/WB or NORTH/SOUTH/etc.)
-- "from"/"to" = the interchange, exit number, or milepost where this leg begins/ends
-- "raw" = the exact text from the permit for this leg (for verification)
-- permit_start = where the FIRST permit road begins (may differ from true origin)
-- permit_end = where the LAST permit road ends (may differ from true destination)
-- Include all toll/escort/time alerts in "alerts"
-- Be exhaustive and precise — this is a legal routing document`;
+Rules: road=exact designation (I-70,US-40,SR-149,MD-8). direction=N/S/E/W. to=exit/milepost where leg ends. raw=exact permit text. Be exhaustive — every segment.`;
 
   const body = JSON.stringify({
     model: 'claude-sonnet-4-5',
-    max_tokens: 16000,
+    max_tokens: 8000,
     messages: [{ role: 'user', content: prompt }],
   });
 
@@ -232,7 +209,7 @@ function makeAnthropicRequest(body) {
       });
     });
     req.on('error', reject);
-    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
+    req.setTimeout(280000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
     req.write(body);
     req.end();
   });
