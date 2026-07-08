@@ -640,8 +640,8 @@ function renderDemoRoute(origin, dest) {
   drawRouteOnMap(origin, dest, wpts2);
 }
 
-// ─── MAPBOX MAP ──────────────────────────────────────────────────────────────
-let mbMap = null, mbToken = '';
+// ─── MAPBOX MAP + HERE ROUTING ───────────────────────────────────────────────
+let mbMap = null, mbToken = '', hereKey = '';
 
 // ─── SUPPRESS GOOGLE MAPS ERROR POPUP ────────────────────────────────────────
 window.gm_authFailure = () => {};
@@ -651,11 +651,13 @@ async function fetchConfig() {
     const res = await fetch('/api/config');
     const cfg = await res.json();
     const key = cfg.mapboxToken || cfg.googleMapsKey || '';
+    hereKey = cfg.hereApiKey || '';
     if (key) {
       mbToken = key;
       document.getElementById('apiKeyBar').style.display = 'none';
       initMapbox(mbToken);
     }
+    if (hereKey) console.log('HERE routing enabled');
   } catch(e) {
     console.warn('Could not fetch config:', e.message);
   }
@@ -822,99 +824,150 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
     await new Promise(r => { if (mbMap._loaded) r(); else mbMap.on('load', r); });
   }
 
-  try {
-    showToast('📍 Building exact permit route…');
+  if (!hereKey) {
+    showToast('\u26a0 HERE key not set \u2014 add HERE_API_KEY in Railway');
+    return;
+  }
 
-    // 1. Geocode true origin and destination
-    const [oCoords, dCoords] = await Promise.all([geocode(origin, token), geocode(dest, token)]);
-    if (!oCoords || !dCoords) { showToast('⚠ Could not geocode addresses'); return; }
+  try {
+    showToast('\ud83d\udccd Resolving permit roads via HERE\u2026');
+
+    // 1. Geocode origin + destination via HERE
+    const [oCoords, dCoords] = await Promise.all([hereGeocode(origin), hereGeocode(dest)]);
+    if (!oCoords || !dCoords) { showToast('\u26a0 Could not geocode addresses'); return; }
     routeOriginCoords = oCoords;
     routeDestCoords   = dCoords;
 
-    // 2. Build geocodable query strings from each leg
-    // Each leg: {road, direction, to, state}. We geocode "road & to, state"
-    // to find the actual interchange coordinate on that road.
-    const legQueries = legs.map(leg => {
-      const road = leg.road || '';
-      const to   = leg.to || '';
-      const state = leg.state || '';
-      // Build a query targeting the interchange: "I-70 and Exit 208, OH"
-      if (to && road) return `${road} ${to}, ${state}`;
-      if (road)       return `${road}, ${state}`;
-      return null;
-    }).filter(Boolean);
-
-    // 3. Geocode all leg interchange points in parallel (batched)
-    showToast(`📍 Locating ${legQueries.length} permit road points…`);
+    // 2. Resolve each leg interchange via HERE geocoder
+    showToast(`\ud83d\udccd Locating ${legs.length} permit road points\u2026`);
     const legCoords = [];
-    const BATCH = 10;
-    for (let i = 0; i < legQueries.length; i += BATCH) {
-      const batch = legQueries.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map(q => geocode(q, token)));
+    const BATCH = 8;
+    for (let i = 0; i < legs.length; i += BATCH) {
+      const batch = legs.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(leg => hereGeocodeLeg(leg)));
       results.forEach(c => { if (c) legCoords.push(c); });
     }
 
-    // 4. Build the full ordered coordinate list:
-    //    origin → [leg interchanges in order] → destination
+    if (legCoords.length === 0) { showToast('\u26a0 Could not resolve permit roads'); return; }
+
+    // 3. Build full ordered point list
     const allPoints = [oCoords, ...legCoords, dCoords];
 
-    // 5. Mapbox Directions has a 25-coordinate limit per request.
-    //    Route in overlapping segments and stitch the geometry together.
-    const fullGeometry = await routeThroughManyPoints(allPoints, token);
+    // 4. Route through all points via HERE (exact road geometry)
+    showToast('\ud83d\udee3\ufe0f Tracing exact route via HERE\u2026');
+    const geometry = await hereRouteThrough(allPoints);
+    if (!geometry || !geometry.coordinates.length) { showToast('\u26a0 Could not build geometry'); return; }
 
-    if (!fullGeometry || !fullGeometry.coordinates.length) {
-      showToast('⚠ Could not build route geometry');
-      return;
-    }
+    // 5. Draw it
+    drawGeometry(geometry);
 
-    // 6. Draw the stitched permit route
-    drawGeometry(fullGeometry);
-
-    // 7. Reset drag state
+    // 6. Reset drag state
     routeDragPoints = [];
     routeMarkers.forEach(m => m.remove());
     routeMarkers = [];
     setupDragInteraction(token);
 
-    showToast(`✅ Permit route drawn — ${legs.length} legs traced`);
+    showToast(`\u2705 Exact permit route drawn \u2014 ${legs.length} legs`);
   } catch(e) {
-    console.warn('Permit route error:', e.message);
-    showToast('⚠ Route error: ' + e.message);
+    console.warn('HERE route error:', e.message);
+    showToast('\u26a0 Route error: ' + e.message);
   }
 }
 
-// Route through many points by chunking into ≤25-coord Directions requests
-async function routeThroughManyPoints(points, token) {
-  const CHUNK = 24; // Mapbox limit is 25; leave room for overlap
-  let allCoords = [];
+// HERE Geocoding \u2014 address \u2192 [lng,lat]
+async function hereGeocode(address) {
+  try {
+    const url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(address)}&apiKey=${hereKey}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.items && data.items.length) {
+      const p = data.items[0].position;
+      return [p.lng, p.lat];
+    }
+  } catch(e) { console.warn('HERE geocode failed:', e.message); }
+  return null;
+}
 
+// HERE Geocoding for a permit leg \u2014 road + interchange
+async function hereGeocodeLeg(leg) {
+  const road = leg.road || '', to = leg.to || '', state = leg.state || '';
+  const stateNames = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
+    VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
+  const sn = stateNames[state] || state;
+  const queries = [];
+  if (to && road) queries.push(`${road} ${to}, ${sn}`);
+  if (to)         queries.push(`${to}, ${sn}`);
+  if (road)       queries.push(`${road}, ${sn}`);
+  for (const q of queries) {
+    const c = await hereGeocode(q);
+    if (c) return c;
+  }
+  return null;
+}
+
+// HERE Routing \u2014 trace exact roads through points, stitch geometry
+async function hereRouteThrough(points) {
+  const CHUNK = 14;
+  let allCoords = [];
   for (let i = 0; i < points.length - 1; i += (CHUNK - 1)) {
     const chunk = points.slice(i, i + CHUNK);
     if (chunk.length < 2) break;
-
-    const coordStr = chunk.map(c => c.join(',')).join(';');
-    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
-      `access_token=${token}&geometries=geojson&overview=full&steps=false`;
-
+    const origin = chunk[0], dest = chunk[chunk.length - 1], vias = chunk.slice(1, -1);
+    let url = `https://router.hereapi.com/v8/routes?transportMode=truck` +
+      `&origin=${origin[1]},${origin[0]}&destination=${dest[1]},${dest[0]}`;
+    vias.forEach(v => { url += `&via=${v[1]},${v[0]}`; });
+    url += `&return=polyline&apiKey=${hereKey}`;
     try {
-      const res  = await fetch(url);
+      const res = await fetch(url);
       const data = await res.json();
       if (data.routes && data.routes.length) {
-        const seg = data.routes[0].geometry.coordinates;
-        // Avoid duplicating the shared point between chunks
-        if (allCoords.length && seg.length) {
-          allCoords = allCoords.concat(seg.slice(1));
-        } else {
-          allCoords = allCoords.concat(seg);
-        }
+        data.routes[0].sections.forEach(section => {
+          const decoded = decodeHerePolyline(section.polyline);
+          if (allCoords.length && decoded.length) allCoords = allCoords.concat(decoded.slice(1));
+          else allCoords = allCoords.concat(decoded);
+        });
+      } else if (data.title || data.notices) {
+        console.warn('HERE routing notice:', data.title || JSON.stringify(data.notices));
       }
-    } catch(e) {
-      console.warn('Chunk routing failed:', e.message);
-    }
+    } catch(e) { console.warn('HERE chunk failed:', e.message); }
   }
-
   return { type: 'LineString', coordinates: allCoords };
 }
+
+// HERE flexible polyline decoder
+function decodeHerePolyline(encoded) {
+  const DECODING_TABLE = [62,-1,-1,63,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,-1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51];
+  function decodeChar(c){ const v=c.charCodeAt(0)-45; if(v<0||v>=DECODING_TABLE.length)return -1; return DECODING_TABLE[v]; }
+  const decoder = decodeUnsignedValues(encoded, decodeChar);
+  const header = decodeHeader(decoder.values);
+  const factor = Math.pow(10, header.precision);
+  const coords = [];
+  let lastLat=0, lastLng=0;
+  const dim = header.thirdDim ? 3 : 2;
+  for (let i=header.headerLen; i+dim-1<decoder.values.length; i+=dim) {
+    lastLat += toSigned(decoder.values[i]);
+    lastLng += toSigned(decoder.values[i+1]);
+    coords.push([lastLng/factor, lastLat/factor]);
+  }
+  return coords;
+}
+function decodeUnsignedValues(encoded, decodeChar) {
+  let result=0n, shift=0n; const values=[];
+  for (const ch of encoded) {
+    const v = decodeChar(ch);
+    if (v<0) continue;
+    const value = BigInt(v);
+    result |= (value & 0x1Fn) << shift;
+    if ((value & 0x20n)===0n){ values.push(Number(result)); result=0n; shift=0n; }
+    else shift += 5n;
+  }
+  return { values };
+}
+function decodeHeader(values) {
+  const encoded = values[1];
+  return { precision: encoded & 15, thirdDim: ((encoded>>4)&7)!==0, headerLen: 2 };
+}
+function toSigned(v){ let r=v; if(r&1)r=~r; r>>=1; return r; }
 
 // Draw a GeoJSON geometry as the permit route line
 function drawGeometry(geometry) {
