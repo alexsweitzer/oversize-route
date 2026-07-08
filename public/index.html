@@ -962,77 +962,53 @@ async function hereRouteThrough(points) {
   return { type: 'LineString', coordinates: allCoords };
 }
 
-// HERE flexible polyline decoder
+// HERE flexible polyline decoder (official reference algorithm)
 function decodeHerePolyline(encoded) {
-  const DECODING_TABLE = [62,-1,-1,63,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,-1,-1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51];
-  function decodeChar(c){ const v=c.charCodeAt(0)-45; if(v<0||v>=DECODING_TABLE.length)return -1; return DECODING_TABLE[v]; }
-  const decoder = decodeUnsignedValues(encoded, decodeChar);
-  const header = decodeHeader(decoder.values);
-  const factor = Math.pow(10, header.precision);
+  const DECODING_TABLE = [62,-1,-1,52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,-1,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,-1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51];
+
+  // Decode all unsigned varint values
+  const values = [];
+  let result = 0n, shift = 0n;
+  for (let i = 0; i < encoded.length; i++) {
+    const code = encoded.charCodeAt(i) - 45;
+    if (code < 0 || code >= DECODING_TABLE.length) continue;
+    const val = DECODING_TABLE[code];
+    if (val < 0) continue;
+    const bval = BigInt(val);
+    result |= (bval & 0x1Fn) << shift;
+    if ((bval & 0x20n) === 0n) {
+      values.push(result);
+      result = 0n; shift = 0n;
+    } else {
+      shift += 5n;
+    }
+  }
+
+  if (values.length < 2) return [];
+
+  // Header: values[0]=version, values[1]=packed(precision|thirdDim|thirdDimPrecision)
+  const packed = Number(values[1]);
+  const precision = packed & 15;
+  const thirdDim = (packed >> 4) & 7;
+  const factor = Math.pow(10, precision);
+
+  function toSigned(v) {
+    let r = BigInt(v);
+    if ((r & 1n) !== 0n) r = ~r;
+    r >>= 1n;
+    return Number(r);
+  }
+
   const coords = [];
-  let lastLat=0, lastLng=0;
-  const dim = header.thirdDim ? 3 : 2;
-  for (let i=header.headerLen; i+dim-1<decoder.values.length; i+=dim) {
-    lastLat += toSigned(decoder.values[i]);
-    lastLng += toSigned(decoder.values[i+1]);
-    coords.push([lastLng/factor, lastLat/factor]);
+  let lat = 0, lng = 0;
+  const dim = thirdDim !== 0 ? 3 : 2;
+
+  for (let i = 2; i + 1 < values.length; i += dim) {
+    lat += toSigned(values[i]);
+    lng += toSigned(values[i + 1]);
+    coords.push([lng / factor, lat / factor]);
   }
   return coords;
-}
-function decodeUnsignedValues(encoded, decodeChar) {
-  let result=0n, shift=0n; const values=[];
-  for (const ch of encoded) {
-    const v = decodeChar(ch);
-    if (v<0) continue;
-    const value = BigInt(v);
-    result |= (value & 0x1Fn) << shift;
-    if ((value & 0x20n)===0n){ values.push(Number(result)); result=0n; shift=0n; }
-    else shift += 5n;
-  }
-  return { values };
-}
-function decodeHeader(values) {
-  const encoded = values[1];
-  return { precision: encoded & 15, thirdDim: ((encoded>>4)&7)!==0, headerLen: 2 };
-}
-function toSigned(v){ let r=v; if(r&1)r=~r; r>>=1; return r; }
-
-// Draw a GeoJSON geometry as the permit route line
-function drawGeometry(geometry) {
-  if (mbMap.getSource('permit-route')) {
-    mbMap.getSource('permit-route').setData({ type: 'Feature', geometry });
-  } else {
-    mbMap.addSource('permit-route', { type: 'geojson', data: { type: 'Feature', geometry } });
-    mbMap.addLayer({
-      id: 'permit-route-casing', type: 'line', source: 'permit-route',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#b87a18', 'line-width': 14, 'line-opacity': 0.35 },
-    });
-    mbMap.addLayer({
-      id: 'permit-route-hit', type: 'line', source: 'permit-route',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#f5a623', 'line-width': 20, 'line-opacity': 0 },
-    });
-    mbMap.addLayer({
-      id: 'permit-route-line', type: 'line', source: 'permit-route',
-      layout: { 'line-join': 'round', 'line-cap': 'round' },
-      paint: { 'line-color': '#f5a623', 'line-width': 5, 'line-opacity': 0.95 },
-    });
-  }
-
-  // Fit map to route
-  const coords = geometry.coordinates;
-  if (coords.length) {
-    const bounds = coords.reduce((b,c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
-    mbMap.fitBounds(bounds, { padding: 70, duration: 800 });
-  }
-
-  // Endpoint markers
-  placeEndpointMarkers();
-
-  // Show hint
-  const hint = document.getElementById('dragHint');
-  if (hint) hint.style.display = 'block';
 }
 
 async function drawRouteOnMap(origin, dest, permitWaypoints) {
