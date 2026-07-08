@@ -574,19 +574,20 @@ function renderRouteResults(route, analysis) {
   document.getElementById('shareInput').textContent = window.location.origin + '/drive/' + route.share_token;
   document.getElementById('shareCard').style.display = 'block';
 
+  // Store the analysis legs globally for Stage 2 map drawing
+  window._routeLegs = analysis?.legs || route.ai_analysis?.legs || [];
+  window._permitStart = analysis?.permit_start || route.ai_analysis?.permit_start || '';
+  window._permitEnd   = analysis?.permit_end || route.ai_analysis?.permit_end || '';
+
   const origin = document.getElementById('originAddr').value.trim();
   const dest   = document.getElementById('destAddr').value.trim();
 
-  // Populate the waypoints textarea with AI's suggested permit-required waypoints
-  // Dispatcher can review/edit these before redrawing the map
-  const aiWaypoints = analysis?.map_waypoints || route.ai_analysis?.map_waypoints || [];
-  if (aiWaypoints.length > 0) {
-    document.getElementById('waypointsInput').value = aiWaypoints.join('\n');
-    showRedrawBtn(true);
+  // Draw the exact permit route from the extracted legs (Stage 2)
+  if (window._routeLegs.length > 0) {
+    drawPermitRouteFromLegs(origin, dest, window._routeLegs);
+  } else {
+    drawRouteOnMap(origin, dest, []);
   }
-
-  // Draw map with AI waypoints
-  drawRouteOnMap(origin, dest, aiWaypoints);
 }
 
 function redrawFromWaypoints() {
@@ -808,6 +809,150 @@ let routeDestCoords    = null;
 let routeDragPoints    = [];    // user-added drag points only (shown as handles)
 let routeAiWaypoints   = [];    // AI permit waypoints (used for routing, NOT shown as handles)
 let routeMarkers       = [];
+
+// ─── STAGE 2: DRAW EXACT PERMIT ROUTE FROM LEGS ──────────────────────────────
+// Takes the AI-extracted legs (road + exit/interchange) and traces the route
+// through those exact roads by geocoding each interchange point.
+async function drawPermitRouteFromLegs(origin, dest, legs) {
+  const token = getMapsKey();
+  if (!token) { drawSvgRoute(); return; }
+
+  if (!mbMap) {
+    await initMapbox(token);
+    await new Promise(r => { if (mbMap._loaded) r(); else mbMap.on('load', r); });
+  }
+
+  try {
+    showToast('📍 Building exact permit route…');
+
+    // 1. Geocode true origin and destination
+    const [oCoords, dCoords] = await Promise.all([geocode(origin, token), geocode(dest, token)]);
+    if (!oCoords || !dCoords) { showToast('⚠ Could not geocode addresses'); return; }
+    routeOriginCoords = oCoords;
+    routeDestCoords   = dCoords;
+
+    // 2. Build geocodable query strings from each leg
+    // Each leg: {road, direction, to, state}. We geocode "road & to, state"
+    // to find the actual interchange coordinate on that road.
+    const legQueries = legs.map(leg => {
+      const road = leg.road || '';
+      const to   = leg.to || '';
+      const state = leg.state || '';
+      // Build a query targeting the interchange: "I-70 and Exit 208, OH"
+      if (to && road) return `${road} ${to}, ${state}`;
+      if (road)       return `${road}, ${state}`;
+      return null;
+    }).filter(Boolean);
+
+    // 3. Geocode all leg interchange points in parallel (batched)
+    showToast(`📍 Locating ${legQueries.length} permit road points…`);
+    const legCoords = [];
+    const BATCH = 10;
+    for (let i = 0; i < legQueries.length; i += BATCH) {
+      const batch = legQueries.slice(i, i + BATCH);
+      const results = await Promise.all(batch.map(q => geocode(q, token)));
+      results.forEach(c => { if (c) legCoords.push(c); });
+    }
+
+    // 4. Build the full ordered coordinate list:
+    //    origin → [leg interchanges in order] → destination
+    const allPoints = [oCoords, ...legCoords, dCoords];
+
+    // 5. Mapbox Directions has a 25-coordinate limit per request.
+    //    Route in overlapping segments and stitch the geometry together.
+    const fullGeometry = await routeThroughManyPoints(allPoints, token);
+
+    if (!fullGeometry || !fullGeometry.coordinates.length) {
+      showToast('⚠ Could not build route geometry');
+      return;
+    }
+
+    // 6. Draw the stitched permit route
+    drawGeometry(fullGeometry);
+
+    // 7. Reset drag state
+    routeDragPoints = [];
+    routeMarkers.forEach(m => m.remove());
+    routeMarkers = [];
+    setupDragInteraction(token);
+
+    showToast(`✅ Permit route drawn — ${legs.length} legs traced`);
+  } catch(e) {
+    console.warn('Permit route error:', e.message);
+    showToast('⚠ Route error: ' + e.message);
+  }
+}
+
+// Route through many points by chunking into ≤25-coord Directions requests
+async function routeThroughManyPoints(points, token) {
+  const CHUNK = 24; // Mapbox limit is 25; leave room for overlap
+  let allCoords = [];
+
+  for (let i = 0; i < points.length - 1; i += (CHUNK - 1)) {
+    const chunk = points.slice(i, i + CHUNK);
+    if (chunk.length < 2) break;
+
+    const coordStr = chunk.map(c => c.join(',')).join(';');
+    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordStr}?` +
+      `access_token=${token}&geometries=geojson&overview=full&steps=false`;
+
+    try {
+      const res  = await fetch(url);
+      const data = await res.json();
+      if (data.routes && data.routes.length) {
+        const seg = data.routes[0].geometry.coordinates;
+        // Avoid duplicating the shared point between chunks
+        if (allCoords.length && seg.length) {
+          allCoords = allCoords.concat(seg.slice(1));
+        } else {
+          allCoords = allCoords.concat(seg);
+        }
+      }
+    } catch(e) {
+      console.warn('Chunk routing failed:', e.message);
+    }
+  }
+
+  return { type: 'LineString', coordinates: allCoords };
+}
+
+// Draw a GeoJSON geometry as the permit route line
+function drawGeometry(geometry) {
+  if (mbMap.getSource('permit-route')) {
+    mbMap.getSource('permit-route').setData({ type: 'Feature', geometry });
+  } else {
+    mbMap.addSource('permit-route', { type: 'geojson', data: { type: 'Feature', geometry } });
+    mbMap.addLayer({
+      id: 'permit-route-casing', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#b87a18', 'line-width': 14, 'line-opacity': 0.35 },
+    });
+    mbMap.addLayer({
+      id: 'permit-route-hit', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 20, 'line-opacity': 0 },
+    });
+    mbMap.addLayer({
+      id: 'permit-route-line', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 5, 'line-opacity': 0.95 },
+    });
+  }
+
+  // Fit map to route
+  const coords = geometry.coordinates;
+  if (coords.length) {
+    const bounds = coords.reduce((b,c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+    mbMap.fitBounds(bounds, { padding: 70, duration: 800 });
+  }
+
+  // Endpoint markers
+  placeEndpointMarkers();
+
+  // Show hint
+  const hint = document.getElementById('dragHint');
+  if (hint) hint.style.display = 'block';
+}
 
 async function drawRouteOnMap(origin, dest, permitWaypoints) {
   const token = getMapsKey();
