@@ -1312,6 +1312,54 @@ function refreshDragHandles() {
   });
 }
 
+// Draw a GeoJSON LineString geometry as the amber permit route
+function drawGeometry(geometry) {
+  if (!mbMap || !geometry || !geometry.coordinates || !geometry.coordinates.length) {
+    console.warn('drawGeometry: nothing to draw');
+    return;
+  }
+
+  const feature = { type: 'Feature', geometry };
+
+  // Update existing source, or create source + layers
+  if (mbMap.getSource('permit-route')) {
+    mbMap.getSource('permit-route').setData(feature);
+  } else {
+    mbMap.addSource('permit-route', { type: 'geojson', data: feature });
+
+    // Glow casing
+    mbMap.addLayer({
+      id: 'permit-route-casing', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#b87a18', 'line-width': 14, 'line-opacity': 0.35 },
+    });
+    // Transparent wide hit-area for click-to-add-point
+    mbMap.addLayer({
+      id: 'permit-route-hit', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 20, 'line-opacity': 0 },
+    });
+    // Main amber line
+    mbMap.addLayer({
+      id: 'permit-route-line', type: 'line', source: 'permit-route',
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#f5a623', 'line-width': 5, 'line-opacity': 0.95 },
+    });
+  }
+
+  // Fit map to the route
+  const coords = geometry.coordinates;
+  const bounds = coords.reduce((b, c) => b.extend(c), new mapboxgl.LngLatBounds(coords[0], coords[0]));
+  mbMap.fitBounds(bounds, { padding: 70, duration: 800 });
+
+  // Place origin/destination markers
+  placeEndpointMarkers();
+
+  // Show the drag hint
+  const hint = document.getElementById('dragHint');
+  if (hint) hint.style.display = 'block';
+}
+
 function placeEndpointMarkers() {
   ['permit-start','permit-end'].forEach(id => {
     const el = document.getElementById(id);
