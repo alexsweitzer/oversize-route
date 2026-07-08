@@ -134,19 +134,34 @@ Step rules:
 
   const body = JSON.stringify({
     model: 'claude-sonnet-4-5',
-    max_tokens: 3000,
+    max_tokens: 8000,
     messages: [{ role: 'user', content: prompt }],
   });
 
   const responseText = await makeAnthropicRequest(body);
-  const clean = responseText.replace(/```json|```/g, '').trim();
-  const analysis = JSON.parse(clean);
+  let clean = responseText.replace(/```json|```/g, '').trim();
+
+  // Extract JSON object if there's any surrounding text
+  const firstBrace = clean.indexOf('{');
+  const lastBrace  = clean.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1) {
+    clean = clean.slice(firstBrace, lastBrace + 1);
+  }
+
+  let analysis;
+  try {
+    analysis = JSON.parse(clean);
+  } catch (e) {
+    console.error('JSON parse failed. Response length:', responseText.length);
+    console.error('Last 200 chars:', clean.slice(-200));
+    throw new Error('AI response was incomplete (likely truncated). Try again — the route may have been too complex for one response.');
+  }
 
   if (!analysis.steps || !Array.isArray(analysis.steps)) {
     throw new Error('AI returned invalid steps array');
   }
 
-  // Waypoints start as null — Google Maps resolves them on the frontend
+  // Waypoints start as null — map resolves them on the frontend
   analysis.waypoints = analysis.steps.map(() => ({ lat: null, lng: null }));
 
   return analysis;
