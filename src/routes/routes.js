@@ -107,7 +107,8 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// ─── POST /api/routes/:id/analyze — run AI permit analysis ───────────────────
+// ─── POST /api/routes/:id/analyze — START async AI analysis ──────────────────
+// Returns immediately; analysis runs in background. Frontend polls /analyze-status.
 router.post('/:id/analyze', requireAuth, async (req, res) => {
   try {
     const route = await getOne(
@@ -121,15 +122,28 @@ router.post('/:id/analyze', requireAuth, async (req, res) => {
       [route.id]
     );
 
-    // Update status
-    await query('UPDATE routes SET status=$1 WHERE id=$2', ['draft', route.id]);
+    // Mark as analyzing
+    await query('UPDATE routes SET status=$1 WHERE id=$2', ['analyzing', route.id]);
 
-    // Run AI analysis
+    // Respond IMMEDIATELY so Railway's 60s gateway timeout is never hit
+    res.json({ status: 'analyzing', route_id: route.id });
+
+    // Run the analysis in the background (after response is sent)
+    runAnalysisInBackground(route, permits, req.user.id);
+
+  } catch (err) {
+    console.error('Analyze start error:', err);
+    res.status(500).json({ error: 'Failed to start analysis: ' + err.message });
+  }
+});
+
+// Background analysis — updates the route record when done
+async function runAnalysisInBackground(route, permits, userId) {
+  try {
     const analysis = await analyzePermitsWithAI(route, permits);
-    console.log(`AI analysis complete: ${analysis.steps?.length} steps, states: ${analysis.states?.join(',')}, waypoints: ${analysis.map_waypoints?.join(' | ')}`);
+    console.log(`AI analysis complete: ${analysis.steps?.length} steps, states: ${analysis.states?.join(',')}`);
 
-    // Save results
-    const updated = await getOne(`
+    await query(`
       UPDATE routes SET
         steps                = $1,
         waypoints            = $2,
@@ -140,25 +154,49 @@ router.post('/:id/analyze', requireAuth, async (req, res) => {
         permit_alerts        = $7,
         status               = 'ready'
       WHERE id = $8
-      RETURNING *
     `, [
       JSON.stringify(analysis.steps),
       JSON.stringify(analysis.waypoints),
-      analysis.distance_mi,
-      analysis.duration_min,
+      analysis.distance_mi || null,
+      analysis.duration_min || null,
       analysis.states,
       JSON.stringify(analysis),
       JSON.stringify(analysis.alerts),
       route.id,
     ]);
 
-    await logActivity(route.id, req.user.id, null, 'route_analyzed',
-      `AI analysis complete — ${analysis.steps.length} steps, ${analysis.distance_mi} mi`);
-
-    res.json({ route: updated, analysis });
+    await logActivity(route.id, userId, null, 'route_analyzed',
+      `AI analysis complete — ${analysis.steps.length} steps`);
   } catch (err) {
-    console.error('Analysis error:', err);
-    res.status(500).json({ error: 'AI analysis failed: ' + err.message });
+    console.error('Background analysis error:', err);
+    // Mark as errored so the frontend can show the failure
+    await query(`UPDATE routes SET status='error', ai_analysis=$1 WHERE id=$2`,
+      [JSON.stringify({ error: err.message }), route.id]).catch(()=>{});
+  }
+}
+
+// ─── GET /api/routes/:id/analyze-status — poll for analysis completion ───────
+router.get('/:id/analyze-status', requireAuth, async (req, res) => {
+  try {
+    const route = await getOne(
+      'SELECT id, status, steps, waypoints, total_distance_mi, total_duration_min, states_crossed, ai_analysis, permit_alerts, share_token FROM routes WHERE id=$1 AND created_by=$2',
+      [req.params.id, req.user.id]
+    );
+    if (!route) return res.status(404).json({ error: 'Route not found' });
+
+    if (route.status === 'ready') {
+      // Analysis complete — return full result
+      res.json({ status: 'ready', route, analysis: route.ai_analysis });
+    } else if (route.status === 'error') {
+      const errMsg = route.ai_analysis?.error || 'Analysis failed';
+      res.json({ status: 'error', error: errMsg });
+    } else {
+      // Still analyzing
+      res.json({ status: route.status || 'analyzing' });
+    }
+  } catch (err) {
+    console.error('Status check error:', err);
+    res.status(500).json({ error: 'Status check failed' });
   }
 });
 
