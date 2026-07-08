@@ -920,7 +920,7 @@ function filterOutliers(origin, points, dest) {
     return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
   }
   const totalTripDist = dist(origin, dest);
-  const maxJump = Math.max(totalTripDist * 0.4, 60);
+  const maxJump = Math.max(totalTripDist * 0.6, 120);
   const kept = [];
   let prev = origin;
   for (const p of points) {
@@ -997,15 +997,18 @@ async function hereGeocodeLeg(leg) {
   return null; // couldn't resolve reliably — skip this leg
 }
 
-// HERE Routing \u2014 trace exact roads through points, stitch geometry
+// HERE Routing — trace exact roads through points, stitch geometry
 async function hereRouteThrough(points) {
   const CHUNK = 14;
   let allCoords = [];
+  let chunkNum = 0;
   for (let i = 0; i < points.length - 1; i += (CHUNK - 1)) {
     const chunk = points.slice(i, i + CHUNK);
     if (chunk.length < 2) break;
+    chunkNum++;
     const origin = chunk[0], dest = chunk[chunk.length - 1], vias = chunk.slice(1, -1);
-    let url = `https://router.hereapi.com/v8/routes?transportMode=truck` +
+    // Use 'car' mode — truck mode needs vehicle dims and often rejects routes
+    let url = `https://router.hereapi.com/v8/routes?transportMode=car` +
       `&origin=${origin[1]},${origin[0]}&destination=${dest[1]},${dest[0]}`;
     vias.forEach(v => { url += `&via=${v[1]},${v[0]}`; });
     url += `&return=polyline&apiKey=${hereKey}`;
@@ -1018,11 +1021,13 @@ async function hereRouteThrough(points) {
           if (allCoords.length && decoded.length) allCoords = allCoords.concat(decoded.slice(1));
           else allCoords = allCoords.concat(decoded);
         });
-      } else if (data.title || data.notices) {
-        console.warn('HERE routing notice:', data.title || JSON.stringify(data.notices));
+        console.log(`HERE chunk ${chunkNum}: OK, ${data.routes[0].sections.length} sections`);
+      } else {
+        console.warn(`HERE chunk ${chunkNum} FAILED:`, JSON.stringify(data).slice(0, 300));
       }
-    } catch(e) { console.warn('HERE chunk failed:', e.message); }
+    } catch(e) { console.warn(`HERE chunk ${chunkNum} error:`, e.message); }
   }
+  console.log(`HERE routing done: ${allCoords.length} total coordinates`);
   return { type: 'LineString', coordinates: allCoords };
 }
 
