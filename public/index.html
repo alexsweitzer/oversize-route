@@ -691,13 +691,20 @@ function loadMapboxScript() {
 }
 
 async function initMapbox(token) {
+  // Prevent double-initialization which causes a broken/green map
+  if (mbMap) {
+    console.log('Map already initialized, skipping re-init');
+    return;
+  }
   try {
     await loadMapboxScript();
+    if (!token) { console.warn('No Mapbox token'); drawSvgRoute(); return; }
     mapboxgl.accessToken = token;
 
     const mapEl = document.getElementById('mapboxMap');
     mapEl.style.display = 'block';
-    document.getElementById('mapSvg').style.display = 'none';
+    const svgEl = document.getElementById('mapSvg');
+    if (svgEl) svgEl.style.display = 'none';
 
     // Ensure container has pixel dimensions before Mapbox init
     const mapWrap = mapEl.parentElement;
@@ -716,13 +723,20 @@ async function initMapbox(token) {
 
     mbMap.addControl(new mapboxgl.NavigationControl({ showCompass: false }), 'top-left');
 
-    // Init address autocomplete once map is ready
+    // Force a resize after load to fix container sizing issues
     mbMap.on('load', () => {
+      setTimeout(() => { if (mbMap) mbMap.resize(); }, 100);
       initAddressAutocomplete();
+    });
+
+    // Log any Mapbox errors (invalid token, etc.)
+    mbMap.on('error', (e) => {
+      console.error('Mapbox error:', e.error?.message || e);
     });
 
   } catch(e) {
     console.warn('Mapbox init failed:', e.message);
+    mbMap = null;
     drawSvgRoute();
   }
 }
