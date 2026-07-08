@@ -141,6 +141,7 @@ router.post('/:id/analyze', requireAuth, async (req, res) => {
 
 // Background analysis — updates the route record when done
 async function runAnalysisInBackground(route, permits, userId) {
+  console.log(`[BG] Starting analysis for route ${route.id} with ${permits.length} permits`);
   try {
     const analysis = await analyzePermitsWithAI(route, permits);
     console.log(`AI analysis complete: ${analysis.steps?.length} steps, states: ${analysis.states?.join(',')}`);
@@ -179,6 +180,10 @@ async function runAnalysisInBackground(route, permits, userId) {
 
 // ─── GET /api/routes/:id/analyze-status — poll for analysis completion ───────
 router.get('/:id/analyze-status', requireAuth, async (req, res) => {
+  // Prevent caching — every poll must get fresh status
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   try {
     const route = await getOne(
       'SELECT id, status, steps, waypoints, total_distance_mi, total_duration_min, states_crossed, ai_analysis, permit_alerts, share_token FROM routes WHERE id=$1 AND created_by=$2',
