@@ -959,13 +959,14 @@ const STATE_BOUNDS = {
 const STATE_NAMES = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
   VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
 
-// Plain HERE geocode (address → [lng,lat]), optionally constrained to a bounding box
+// Plain HERE geocode (address → [lng,lat]).
+// Uses countryCode constraint (bbox isn't valid on /geocode endpoint).
 async function hereGeocode(address, bbox) {
   try {
-    let url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(address)}&apiKey=${hereKey}`;
-    if (bbox) {
-      url += `&in=bbox:${bbox[0]},${bbox[1]},${bbox[2]},${bbox[3]}`;
-    }
+    let url = `https://geocode.search.hereapi.com/v1/geocode` +
+      `?q=${encodeURIComponent(address)}` +
+      `&in=countryCode:USA` +
+      `&apiKey=${hereKey}`;
     const res = await fetch(url);
     const data = await res.json();
     if (data.items && data.items.length) {
