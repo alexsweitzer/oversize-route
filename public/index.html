@@ -523,9 +523,13 @@ async function buildRoute() {
     clearInterval(ticker);
     showProc(false);
     console.error(e);
-    // Fallback to demo route if AI not configured
-    renderDemoRoute(origin, dest);
-    showToast('⚠ Using demo route (add Anthropic key for AI analysis)');
+    // Show a clear error — do NOT fall back to misleading demo data
+    const msg = e.message || 'Analysis failed';
+    showToast('⚠ ' + msg);
+    addActivity({ dot:'#ff4b4b', txt: 'Analysis failed: ' + msg + ' — click Analyze to retry', time:'just now' });
+    // Re-enable the analyze button so they can retry
+    const btn = document.getElementById('analyzeBtn');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<span>⚡</span> Analyze Permits &amp; Build Route'; }
   }
 }
 
