@@ -868,18 +868,23 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
     routeOriginCoords = oCoords;
     routeDestCoords   = dCoords;
 
-    // 2. Resolve each leg interchange via HERE geocoder (quality-filtered)
+    // 2. Resolve legs SEQUENTIALLY, each biased toward the previous point.
+    //    This makes HERE return the road instance NEAREST the route, not a
+    //    random point 60 miles down the same road — kills local zigzags.
     showToast(`Locating ${legs.length} permit road points...`);
     const rawLegCoords = [];
-    const BATCH = 8;
     let resolved = 0, failed = 0;
-    for (let i = 0; i < legs.length; i += BATCH) {
-      const batch = legs.slice(i, i + BATCH);
-      const results = await Promise.all(batch.map(leg => hereGeocodeLeg(leg)));
-      results.forEach((r, j) => {
-        if (r && r.coord) { rawLegCoords.push(r.coord); resolved++; }
-        else { failed++; }
-      });
+    let anchor = oCoords; // proximity bias starts at the origin
+    for (let i = 0; i < legs.length; i++) {
+      const r = await hereGeocodeLeg(legs[i], anchor);
+      if (r && r.coord) {
+        rawLegCoords.push(r.coord);
+        anchor = r.coord; // chain: next leg biases toward this one
+        resolved++;
+      } else {
+        failed++;
+      }
+      if (i % 10 === 0) showToast(`Locating permit roads... ${i+1}/${legs.length}`);
     }
     console.log(`Geocoding: ${resolved} resolved, ${failed} failed out of ${legs.length} legs`);
 
@@ -991,20 +996,26 @@ const STATE_BOUNDS = {
 const STATE_NAMES = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
   VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
 
-// HERE geocode returning {coord, score, resultType}. Constrained to a state bbox.
-async function hereGeocode(address, bbox) {
+// HERE geocode returning {coord, score, resultType}.
+// Optional bbox filter and 'anchor' proximity bias ([lng,lat]).
+async function hereGeocode(address, bbox, anchor) {
   try {
     let url = `https://geocode.search.hereapi.com/v1/geocode` +
       `?q=${encodeURIComponent(address)}` +
       `&in=countryCode:USA` +
       `&limit=5` +
       `&apiKey=${hereKey}`;
+    if (anchor) {
+      // Proximity bias: HERE prefers results near this point (lat,lng order)
+      url += `&at=${anchor[1]},${anchor[0]}`;
+    }
     const res = await fetch(url);
     const data = await res.json();
     if (!data.items || !data.items.length) return null;
 
-    // Pick the best item that falls inside the target bbox (if given)
-    let best = null;
+    // Among returned items, pick the one CLOSEST to the anchor (if given)
+    // that also falls inside the bbox (if given).
+    let best = null, bestDist = Infinity;
     for (const item of data.items) {
       const p = item.position;
       const coord = [p.lng, p.lat];
@@ -1014,13 +1025,15 @@ async function hereGeocode(address, bbox) {
                       p.lat >= bbox[1]-pad && p.lat <= bbox[3]+pad;
         if (!inBox) continue;
       }
-      // First in-box result is HERE's highest-ranked → take it
-      best = {
-        coord,
-        score: item.scoring?.queryScore ?? 0,
-        resultType: item.resultType || '',
-      };
-      break;
+      if (anchor) {
+        const d = (coord[0]-anchor[0])**2 + (coord[1]-anchor[1])**2;
+        if (d < bestDist) {
+          bestDist = d;
+          best = { coord, score: item.scoring?.queryScore ?? 0, resultType: item.resultType || '' };
+        }
+      } else if (!best) {
+        best = { coord, score: item.scoring?.queryScore ?? 0, resultType: item.resultType || '' };
+      }
     }
     return best;
   } catch(e) {
@@ -1038,38 +1051,34 @@ function inStateBounds(coord, state) {
   return lng >= b[0]-pad && lng <= b[2]+pad && lat >= b[1]-pad && lat <= b[3]+pad;
 }
 
-// Geocode a permit leg with strict quality filtering.
-// Returns {coord, score, resultType} or null. Rejects low-confidence matches.
-async function hereGeocodeLeg(leg) {
+// Geocode a permit leg, biased toward the previous route point (anchor).
+// Returns {coord, score} or null.
+async function hereGeocodeLeg(leg, anchor) {
   const road  = leg.road || '';
   const to    = leg.to || '';
   const state = leg.state || '';
   const sn    = STATE_NAMES[state] || state;
   const bbox  = STATE_BOUNDS[state];
 
-  // Query forms, most specific first
   const queries = [];
   if (to && road) queries.push(`${road} at ${to}, ${sn}`);
   if (to && road) queries.push(`${road} ${to}, ${sn}`);
-  if (road && to) queries.push(`${to}, ${sn}`);
+  if (to)         queries.push(`${to}, ${sn}`);
   if (road)       queries.push(`${road}, ${sn}`);
 
   const candidates = [];
   for (const q of queries) {
-    const r = await hereGeocode(q, bbox);
+    const r = await hereGeocode(q, bbox, anchor);
     if (r && r.coord) {
       candidates.push(r);
-      // Strong match on a specific query — take it immediately
       if (r.score >= 0.85) return r;
     }
   }
-  // Otherwise return the best-scoring candidate we found (if any decent one)
   if (candidates.length) {
     candidates.sort((a,b) => b.score - a.score);
-    // Only accept if the best is at least a moderate match
     if (candidates[0].score >= 0.5) return candidates[0];
   }
-  return null; // nothing trustworthy — skip this leg
+  return null;
 }
 
 // HERE Routing — trace exact roads through points, stitch geometry
