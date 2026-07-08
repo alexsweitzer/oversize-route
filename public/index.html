@@ -504,16 +504,19 @@ async function buildRoute() {
     renderPermits();
     if (permits.length) addActivity({ dot:'#3ddc84', txt:`${permits.length} permit(s) uploaded`, time:'just now' });
 
-    // 3. Run AI analysis
+    // 3. START AI analysis (async — returns immediately)
     document.getElementById('procStep').textContent = 'AI analyzing permits...';
-    const analysisRes = await api('POST', `/api/routes/${currentRouteId}/analyze`);
-    const route = analysisRes.route;
-    const analysis = analysisRes.analysis;
+    await api('POST', `/api/routes/${currentRouteId}/analyze`);
+
+    // 4. Poll for completion (sidesteps Railway's 60s request timeout)
+    const result = await pollAnalysisStatus(currentRouteId);
+    const route = result.route;
+    const analysis = result.analysis;
 
     clearInterval(ticker);
     showProc(false);
 
-    // 4. Render results
+    // 5. Render results
     renderRouteResults(route, analysis);
     addActivity({ dot:'#3ddc84', txt:`Route built — ${analysis?.steps?.length || 0} steps`, time:'just now' });
     document.getElementById('sendBtn').disabled = false;
@@ -531,6 +534,31 @@ async function buildRoute() {
     const btn = document.getElementById('analyzeBtn');
     if (btn) { btn.disabled = false; btn.innerHTML = '<span>⚡</span> Analyze Permits &amp; Build Route'; }
   }
+}
+
+// Poll the analysis status until ready or error (max ~4 minutes)
+async function pollAnalysisStatus(routeId) {
+  const maxAttempts = 80; // 80 × 3s = 240s max
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    let status;
+    try {
+      status = await api('GET', `/api/routes/${routeId}/analyze-status`);
+    } catch(e) {
+      // Transient error — keep polling
+      continue;
+    }
+    const el = document.getElementById('procStep');
+    if (status.status === 'ready') {
+      return { route: status.route, analysis: status.analysis };
+    } else if (status.status === 'error') {
+      throw new Error(status.error || 'Analysis failed');
+    } else {
+      // Still analyzing — update the progress text
+      if (el) el.textContent = `AI reading permits… (${i * 3}s)`;
+    }
+  }
+  throw new Error('Analysis timed out after 4 minutes — try again');
 }
 
 function renderRouteResults(route, analysis) {
