@@ -870,13 +870,25 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
     showToast(`Locating ${legs.length} permit road points...`);
     const rawLegCoords = [];
     const BATCH = 8;
+    let resolved = 0, failed = 0;
     for (let i = 0; i < legs.length; i += BATCH) {
       const batch = legs.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(leg => hereGeocodeLeg(leg)));
-      results.forEach(c => { if (c) rawLegCoords.push(c); });
+      results.forEach((c, j) => {
+        if (c) { rawLegCoords.push(c); resolved++; }
+        else { failed++; if (failed <= 3) console.warn('Failed to geocode leg:', batch[j].road, batch[j].to, batch[j].state); }
+      });
     }
+    console.log(`Geocoding: ${resolved} resolved, ${failed} failed out of ${legs.length} legs`);
 
-    if (rawLegCoords.length === 0) { showToast('Could not resolve permit roads'); return; }
+    if (rawLegCoords.length === 0) {
+      showToast('Could not resolve permit roads — check console');
+      console.error('ZERO legs geocoded. HERE key issue or query format problem.');
+      // Diagnostic: test a simple known geocode
+      const testCoord = await hereGeocode('Hagerstown, Maryland', null);
+      console.log('Diagnostic geocode "Hagerstown, Maryland":', testCoord);
+      return;
+    }
 
     // 3. ANTI-SPIDERWEB FILTER: drop points that jump unreasonably far
     const filtered = filterOutliers(oCoords, rawLegCoords, dCoords);
@@ -952,7 +964,6 @@ async function hereGeocode(address, bbox) {
   try {
     let url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(address)}&apiKey=${hereKey}`;
     if (bbox) {
-      // HERE 'in=bbox:west,south,east,north' constrains results to that box
       url += `&in=bbox:${bbox[0]},${bbox[1]},${bbox[2]},${bbox[3]}`;
     }
     const res = await fetch(url);
@@ -961,21 +972,23 @@ async function hereGeocode(address, bbox) {
       const p = data.items[0].position;
       return [p.lng, p.lat];
     }
-  } catch(e) { console.warn('HERE geocode failed:', e.message); }
-  return null;
+    return null;
+  } catch(e) {
+    console.warn('HERE geocode error for', address, ':', e.message);
+    return null;
+  }
 }
 
 // Check a coordinate falls within (or very near) a state's bounding box
 function inStateBounds(coord, state) {
   const b = STATE_BOUNDS[state];
-  if (!b || !coord) return true; // no bounds known → don't reject
+  if (!b || !coord) return true;
   const [lng, lat] = coord;
-  const pad = 0.3; // small padding for border interchanges
+  const pad = 0.3;
   return lng >= b[0]-pad && lng <= b[2]+pad && lat >= b[1]-pad && lat <= b[3]+pad;
 }
 
-// Geocode a permit leg, CONSTRAINED to its state's bounds + validated.
-// Returns null if we can't get a trustworthy point (better to skip than spiderweb).
+// Geocode a permit leg. Tries several query forms, with and without bbox.
 async function hereGeocodeLeg(leg) {
   const road  = leg.road || '';
   const to    = leg.to || '';
@@ -983,18 +996,22 @@ async function hereGeocodeLeg(leg) {
   const sn    = STATE_NAMES[state] || state;
   const bbox  = STATE_BOUNDS[state];
 
-  // Build queries most-specific first, all constrained to the state bbox
+  // Query forms from most to least specific
   const queries = [];
+  if (to && road) queries.push(`${road} and ${to}, ${sn}`);
   if (to && road) queries.push(`${road} ${to}, ${sn}`);
-  if (to)         queries.push(`${to}, ${sn}`);
   if (road)       queries.push(`${road}, ${sn}`);
+  if (to)         queries.push(`${to}, ${sn}`);
 
+  // Try each query WITH bbox first, then WITHOUT bbox as fallback
   for (const q of queries) {
-    const c = await hereGeocode(q, bbox);
-    // Only accept if it's actually within the state bounds
+    let c = await hereGeocode(q, bbox);
+    if (c && inStateBounds(c, state)) return c;
+    // fallback without bbox but still validate against state bounds
+    c = await hereGeocode(q, null);
     if (c && inStateBounds(c, state)) return c;
   }
-  return null; // couldn't resolve reliably — skip this leg
+  return null;
 }
 
 // HERE Routing — trace exact roads through points, stitch geometry
