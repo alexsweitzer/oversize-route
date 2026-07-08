@@ -866,25 +866,29 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
     routeOriginCoords = oCoords;
     routeDestCoords   = dCoords;
 
-    // 2. Resolve each leg interchange via HERE geocoder
-    showToast(`\ud83d\udccd Locating ${legs.length} permit road points\u2026`);
-    const legCoords = [];
+    // 2. Resolve each leg interchange via HERE geocoder (state-constrained)
+    showToast(`Locating ${legs.length} permit road points...`);
+    const rawLegCoords = [];
     const BATCH = 8;
     for (let i = 0; i < legs.length; i += BATCH) {
       const batch = legs.slice(i, i + BATCH);
       const results = await Promise.all(batch.map(leg => hereGeocodeLeg(leg)));
-      results.forEach(c => { if (c) legCoords.push(c); });
+      results.forEach(c => { if (c) rawLegCoords.push(c); });
     }
 
-    if (legCoords.length === 0) { showToast('\u26a0 Could not resolve permit roads'); return; }
+    if (rawLegCoords.length === 0) { showToast('Could not resolve permit roads'); return; }
 
-    // 3. Build full ordered point list
-    const allPoints = [oCoords, ...legCoords, dCoords];
+    // 3. ANTI-SPIDERWEB FILTER: drop points that jump unreasonably far
+    const filtered = filterOutliers(oCoords, rawLegCoords, dCoords);
+    console.log(`Geocoded ${rawLegCoords.length} legs, kept ${filtered.length} after filter`);
 
-    // 4. Route through all points via HERE (exact road geometry)
-    showToast('\ud83d\udee3\ufe0f Tracing exact route via HERE\u2026');
+    // 4. Build full ordered point list
+    const allPoints = [oCoords, ...filtered, dCoords];
+
+    // 5. Route through all points via HERE (exact road geometry)
+    showToast('Tracing exact route via HERE...');
     const geometry = await hereRouteThrough(allPoints);
-    if (!geometry || !geometry.coordinates.length) { showToast('\u26a0 Could not build geometry'); return; }
+    if (!geometry || !geometry.coordinates.length) { showToast('Could not build geometry'); return; }
 
     // 5. Draw it
     drawGeometry(geometry);
@@ -903,9 +907,54 @@ async function drawPermitRouteFromLegs(origin, dest, legs) {
 }
 
 // HERE Geocoding \u2014 address \u2192 [lng,lat]
-async function hereGeocode(address) {
+// Anti-spiderweb filter: keep only geocoded points that progress sensibly
+// along the corridor. Drops far-flung outliers from bad geocodes.
+function filterOutliers(origin, points, dest) {
+  if (!points.length) return [];
+  function dist(a, b) {
+    const R = 3958.8;
+    const dLat = (b[1]-a[1]) * Math.PI/180;
+    const dLng = (b[0]-a[0]) * Math.PI/180;
+    const lat1 = a[1]*Math.PI/180, lat2 = b[1]*Math.PI/180;
+    const x = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLng/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1-x));
+  }
+  const totalTripDist = dist(origin, dest);
+  const maxJump = Math.max(totalTripDist * 0.4, 60);
+  const kept = [];
+  let prev = origin;
+  for (const p of points) {
+    if (dist(prev, p) <= maxJump) { kept.push(p); prev = p; }
+  }
+  return kept;
+}
+
+// State bounding boxes [west, south, east, north] — constrains geocoding
+const STATE_BOUNDS = {
+  MD: [-79.49, 37.91, -75.05, 39.72],
+  WV: [-82.64, 37.20, -77.72, 40.64],
+  PA: [-80.52, 39.72, -74.69, 42.27],
+  OH: [-84.82, 38.40, -80.52, 41.98],
+  MI: [-90.42, 41.70, -82.41, 48.30],
+  VA: [-83.68, 36.54, -75.24, 39.47],
+  NY: [-79.76, 40.50, -71.86, 45.01],
+  IN: [-88.10, 37.77, -84.78, 41.76],
+  IL: [-91.51, 36.97, -87.02, 42.51],
+  KY: [-89.57, 36.50, -81.96, 39.15],
+  DE: [-75.79, 38.45, -75.05, 39.84],
+};
+
+const STATE_NAMES = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
+  VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
+
+// Plain HERE geocode (address → [lng,lat]), optionally constrained to a bounding box
+async function hereGeocode(address, bbox) {
   try {
-    const url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(address)}&apiKey=${hereKey}`;
+    let url = `https://geocode.search.hereapi.com/v1/geocode?q=${encodeURIComponent(address)}&apiKey=${hereKey}`;
+    if (bbox) {
+      // HERE 'in=bbox:west,south,east,north' constrains results to that box
+      url += `&in=bbox:${bbox[0]},${bbox[1]},${bbox[2]},${bbox[3]}`;
+    }
     const res = await fetch(url);
     const data = await res.json();
     if (data.items && data.items.length) {
@@ -916,21 +965,36 @@ async function hereGeocode(address) {
   return null;
 }
 
-// HERE Geocoding for a permit leg \u2014 road + interchange
+// Check a coordinate falls within (or very near) a state's bounding box
+function inStateBounds(coord, state) {
+  const b = STATE_BOUNDS[state];
+  if (!b || !coord) return true; // no bounds known → don't reject
+  const [lng, lat] = coord;
+  const pad = 0.3; // small padding for border interchanges
+  return lng >= b[0]-pad && lng <= b[2]+pad && lat >= b[1]-pad && lat <= b[3]+pad;
+}
+
+// Geocode a permit leg, CONSTRAINED to its state's bounds + validated.
+// Returns null if we can't get a trustworthy point (better to skip than spiderweb).
 async function hereGeocodeLeg(leg) {
-  const road = leg.road || '', to = leg.to || '', state = leg.state || '';
-  const stateNames = { MD:'Maryland', WV:'West Virginia', PA:'Pennsylvania', OH:'Ohio', MI:'Michigan',
-    VA:'Virginia', NY:'New York', IN:'Indiana', IL:'Illinois', KY:'Kentucky', DE:'Delaware' };
-  const sn = stateNames[state] || state;
+  const road  = leg.road || '';
+  const to    = leg.to || '';
+  const state = leg.state || '';
+  const sn    = STATE_NAMES[state] || state;
+  const bbox  = STATE_BOUNDS[state];
+
+  // Build queries most-specific first, all constrained to the state bbox
   const queries = [];
   if (to && road) queries.push(`${road} ${to}, ${sn}`);
   if (to)         queries.push(`${to}, ${sn}`);
   if (road)       queries.push(`${road}, ${sn}`);
+
   for (const q of queries) {
-    const c = await hereGeocode(q);
-    if (c) return c;
+    const c = await hereGeocode(q, bbox);
+    // Only accept if it's actually within the state bounds
+    if (c && inStateBounds(c, state)) return c;
   }
-  return null;
+  return null; // couldn't resolve reliably — skip this leg
 }
 
 // HERE Routing \u2014 trace exact roads through points, stitch geometry
