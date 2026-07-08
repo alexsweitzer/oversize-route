@@ -3,168 +3,206 @@ const fs    = require('fs');
 const path  = require('path');
 
 /**
- * Reads text content from a permit file (PDF or image path).
- * Falls back gracefully if pdf-parse is unavailable or file is an image.
+ * Extract full text from a permit PDF using pdf-parse.
+ * No truncation — we need the complete routing table.
  */
 async function extractPermitText(permit) {
-  // Remote file (S3/R2) — can't read server-side, use filename as context
   if (!permit.file_url || permit.file_url.startsWith('http')) {
-    console.log(`Permit ${permit.file_name}: remote file, using filename context only`);
-    return `Permit file: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
+    return { state: permit.state_code, text: '', note: 'remote file — no text' };
   }
-
-  // Local file — file_url is like "/uploads/1234567890-KM_OH.pdf"
-  // Resolve from project root (two levels up from src/services/)
-  const projectRoot = path.join(__dirname, '../../');
-  // Strip leading slash from file_url before joining
+  const projectRoot  = path.join(__dirname, '../../');
   const relativePath = permit.file_url.replace(/^\//, '');
-  const localPath = path.join(projectRoot, relativePath);
-
-  console.log(`Permit ${permit.file_name}: reading from ${localPath}`);
-
-  const ext = path.extname(permit.file_name).toLowerCase();
+  const localPath    = path.join(projectRoot, relativePath);
+  const ext          = path.extname(permit.file_name).toLowerCase();
 
   try {
     if (!fs.existsSync(localPath)) {
-      console.warn(`Permit file not found at: ${localPath}`);
-      return `Permit on file: ${permit.file_name} (State: ${permit.state_code}) — file not found, apply standard ${permit.state_code} OSOW routing rules`;
+      console.warn(`Permit file not found: ${localPath}`);
+      return { state: permit.state_code, text: '', note: 'file not found' };
     }
-
     if (ext === '.pdf') {
       const pdfParse = require('pdf-parse');
       const buffer   = fs.readFileSync(localPath);
       const data     = await pdfParse(buffer);
-      const text     = data.text.replace(/\s+/g, ' ').trim().slice(0, 3000);
-      console.log(`Permit ${permit.file_name}: extracted ${text.length} chars`);
-      return `=== ${permit.state_code} PERMIT: ${permit.file_name} ===\n${text}\n`;
+      // NO truncation — full text so the entire routing table is captured
+      const text = data.text.replace(/\r/g, '').trim();
+      console.log(`Permit ${permit.state_code} (${permit.file_name}): extracted ${text.length} chars`);
+      return { state: permit.state_code, text, note: 'ok' };
     }
-
-    if (['.jpg','.jpeg','.png'].includes(ext)) {
-      // Image permits — read as base64 and note it's an image
-      console.log(`Permit ${permit.file_name}: image file, using filename context`);
-      return `Permit image: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
-    }
+    return { state: permit.state_code, text: '', note: 'image — no text extraction' };
   } catch (e) {
     console.warn(`Could not parse permit ${permit.file_name}:`, e.message);
+    return { state: permit.state_code, text: '', note: 'parse error: ' + e.message };
   }
-
-  return `Permit on file: ${permit.file_name} (State: ${permit.state_code}) — apply standard ${permit.state_code} OSOW routing rules`;
 }
 
 /**
- * Calls the Anthropic API to analyze permit content and generate a
- * permit-compliant turn-by-turn route.
+ * STAGE 1: Extract structured route legs from all permits.
+ * Each leg = { road, direction, from, to, state, notes }
+ * These are the exact roads the driver is legally required to follow.
  */
-async function analyzePermitsWithAI(route, permits) {
+async function extractRouteLegs(route, permits) {
   if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('ANTHROPIC_API_KEY not set in environment');
+    throw new Error('ANTHROPIC_API_KEY not set');
   }
 
-  // Extract text from each permit file
-  let permitContent = '';
-  if (permits.length > 0) {
-    const texts = await Promise.all(permits.map(p => extractPermitText(p)));
-    permitContent = texts.join('\n');
-  } else {
-    permitContent = '(No permits uploaded — use general OSOW routing standards for each state)';
-  }
+  // Read all permit texts (full, untruncated)
+  const permitData = await Promise.all(permits.map(p => extractPermitText(p)));
 
-  const prompt = `You are an oversized load (OSOW) routing expert for a commercial trucking company.
-Your job is to read the actual permit documents provided and generate a route that strictly complies with every restriction listed in those permits.
+  // Build the permit content block, labeled by state
+  const permitBlock = permitData
+    .filter(p => p.text)
+    .map(p => `########## ${p.state} PERMIT ##########\n${p.text}`)
+    .join('\n\n');
 
-TRIP DETAILS:
-- Origin: ${route.origin_address}
-- Destination: ${route.dest_address}
-- Load description: ${route.load_description || 'Oversized load'} ${route.load_width ? `(${route.load_width} wide)` : ''}
+  const prompt = `You are an oversized-load permit routing parser. Extract the EXACT legally-required route from these state permits.
 
-PERMIT DOCUMENTS:
-${permitContent}
+TRIP:
+- True Origin: ${route.origin_address}
+- True Destination: ${route.dest_address}
 
-INSTRUCTIONS:
-1. Read every restriction in the permit documents above carefully
-2. Identify mandatory routes, prohibited roads, required detours, escort requirements, time restrictions, and bridge/weight restrictions
-3. Build the route to comply with ALL permit restrictions — do NOT use roads the permits prohibit
-4. If permits specify exact roads to use, use those exact roads
-5. If no permits are provided, use standard OSOW routing (avoid low bridges, weight-restricted roads, urban cores)
-6. Include a permit alert for every restriction that affects the driver
-7. The map_waypoints array is CRITICAL — list 4-8 specific cities along the EXACT permit-required route corridor in order from origin to destination. These must be geographically sensible — waypoints must progress logically toward the destination without backtracking or detouring. Format as "City, State" only (e.g. "Hagerstown, MD"). IMPORTANT: A permit for a state does not mean routing through the interior of that state — I-70 briefly crosses WV for only a few miles; do NOT add WV cities as waypoints unless the route genuinely travels deep into WV. Think about the actual highway geometry.
+PERMITS (full text, one per state):
+${permitBlock}
 
-Return ONLY a valid JSON object (no markdown, no explanation, no preamble):
+TASK:
+Each state permit contains an authorized/required route — a specific ordered list of highways, exits, and directions the driver MUST follow. Extract these EXACTLY as written. Do not invent, optimize, or substitute roads.
+
+For each state, find the route section:
+- OHIO: look for "ROUTING AND SPECIAL INSTRUCTIONS" table OR the "Via" line — extract every road/exit in order
+- PENNSYLVANIA: look for "Authorized Route" table with Leg/Route/Dir columns
+- MARYLAND: look for "Authorized Route:" line (START ON ... END ON ...)
+- WEST VIRGINIA: look for the route description (START ON ... END ON ...)
+- MICHIGAN: look for "Directions:" line (START ON ... END ON ...)
+
+Return ONLY valid JSON (no markdown, no preamble):
 {
-  "distance_mi": 487.2,
-  "duration_min": 585,
-  "states": ["MD", "WV", "PA", "OH"],
-  "map_waypoints": [
-    "Hagerstown, MD",
-    "Morgantown, WV",
-    "Wheeling, WV",
-    "St. Clairsville, OH"
-  ],
-  "steps": [
+  "states_in_order": ["MD","WV","PA","OH","MI"],
+  "legs": [
     {
-      "icon": "🚦",
-      "arrow": "⬆",
-      "dir": "straight",
-      "text": "Depart [full origin address] heading [direction] on [road name]",
-      "note": "",
-      "dist": 0.4,
-      "permit": "",
-      "location": "Stevensville, MD"
-    }
-  ],
-  "alerts": [
-    {
+      "seq": 1,
       "state": "MD",
-      "message": "Exact restriction from permit document"
+      "road": "MD-8",
+      "direction": "N",
+      "from": "Emory Cir, Stevensville",
+      "to": "US-50 Exit 37",
+      "raw": "START ON MD-8 NB(IN STEVENSVILLE AT EMORY CIR)"
     }
+  ],
+  "permit_start": "MD-8 NB at Emory Cir, Stevensville, MD",
+  "permit_end": "US-10 at MP Mason 9.37, Ludington, MI",
+  "alerts": [
+    { "state": "MD", "message": "Notify Bay Bridge 410-537-7911 one hour prior to crossing" }
   ]
 }
 
-Step rules:
-- 8 to 16 steps depending on route complexity
-- dir: straight | right | left | merge | exit | arrive
-- arrow: ⬆ | → | ← | ↗ | ↙ | 🏁
-- note: brief permit flag shown on the step (empty string if none)
-- permit: full permit restriction sentence (empty string if none)
-- location: city and state where this step occurs (e.g. "Wheeling, WV")
-- dist: miles as a decimal number
-- Last step MUST have dir "arrive" and dist 0
-- map_waypoints MUST reflect the actual permit-required route — if permits require I-70 through Wheeling WV, include "Wheeling, WV" as a waypoint
-- Be specific — use real road names, highway numbers, and exit numbers`;
+RULES:
+- Order legs in actual travel sequence from origin state to destination state (MD → WV → PA → OH → MI for this trip)
+- Extract EVERY road segment — do not skip or summarize
+- "road" = the highway designation exactly as written (I-70, US-40, SR-149, MD-8, etc.)
+- "direction" = N/S/E/W if given (from NB/SB/EB/WB or NORTH/SOUTH/etc.)
+- "from"/"to" = the interchange, exit number, or milepost where this leg begins/ends
+- "raw" = the exact text from the permit for this leg (for verification)
+- permit_start = where the FIRST permit road begins (may differ from true origin)
+- permit_end = where the LAST permit road ends (may differ from true destination)
+- Include all toll/escort/time alerts in "alerts"
+- Be exhaustive and precise — this is a legal routing document`;
 
   const body = JSON.stringify({
     model: 'claude-sonnet-4-5',
-    max_tokens: 8000,
+    max_tokens: 16000,
     messages: [{ role: 'user', content: prompt }],
   });
 
   const responseText = await makeAnthropicRequest(body);
   let clean = responseText.replace(/```json|```/g, '').trim();
+  const first = clean.indexOf('{');
+  const last  = clean.lastIndexOf('}');
+  if (first !== -1 && last !== -1) clean = clean.slice(first, last + 1);
 
-  // Extract JSON object if there's any surrounding text
-  const firstBrace = clean.indexOf('{');
-  const lastBrace  = clean.lastIndexOf('}');
-  if (firstBrace !== -1 && lastBrace !== -1) {
-    clean = clean.slice(firstBrace, lastBrace + 1);
-  }
-
-  let analysis;
+  let parsed;
   try {
-    analysis = JSON.parse(clean);
+    parsed = JSON.parse(clean);
   } catch (e) {
-    console.error('JSON parse failed. Response length:', responseText.length);
-    console.error('Last 200 chars:', clean.slice(-200));
-    throw new Error('AI response was incomplete (likely truncated). Try again — the route may have been too complex for one response.');
+    console.error('Leg extraction JSON parse failed. Length:', responseText.length);
+    console.error('Tail:', clean.slice(-300));
+    throw new Error('Permit route extraction returned incomplete JSON — try again');
   }
 
-  if (!analysis.steps || !Array.isArray(analysis.steps)) {
-    throw new Error('AI returned invalid steps array');
+  if (!parsed.legs || !Array.isArray(parsed.legs)) {
+    throw new Error('Extraction returned no legs array');
   }
 
-  // Waypoints start as null — map resolves them on the frontend
-  analysis.waypoints = analysis.steps.map(() => ({ lat: null, lng: null }));
+  console.log(`Extracted ${parsed.legs.length} route legs across states: ${parsed.states_in_order?.join(',')}`);
+  return parsed;
+}
 
-  return analysis;
+/**
+ * Main entry — extract the exact permit route legs.
+ * Returns structured legs that the geometry stage will trace onto roads.
+ */
+async function analyzePermitsWithAI(route, permits) {
+  const extraction = await extractRouteLegs(route, permits);
+
+  // Convert legs into turn-by-turn steps for the driver display
+  const steps = legsToSteps(extraction, route);
+
+  return {
+    legs:         extraction.legs,
+    states:       extraction.states_in_order || [],
+    permit_start: extraction.permit_start || '',
+    permit_end:   extraction.permit_end || '',
+    alerts:       extraction.alerts || [],
+    steps,
+    // waypoints derived later by geometry stage
+    waypoints: steps.map(() => ({ lat: null, lng: null })),
+  };
+}
+
+/**
+ * Turn structured legs into driver-facing turn-by-turn steps.
+ */
+function legsToSteps(extraction, route) {
+  const steps = [];
+
+  // Step 1: depart true origin (connector to permit start)
+  steps.push({
+    icon: '🚦', arrow: '⬆', dir: 'straight',
+    text: `Depart ${route.origin_address}`,
+    note: `Auto-route to permit start: ${extraction.permit_start || 'first permit road'}`,
+    dist: 0, permit: '', location: '',
+  });
+
+  // Middle steps: one per permit leg
+  extraction.legs.forEach((leg, i) => {
+    const dirWord = { N:'North', S:'South', E:'East', W:'West' }[leg.direction] || '';
+    const arrow   = { N:'⬆', S:'⬇', E:'➡️', W:'⬅️' }[leg.direction] || '➡️';
+    steps.push({
+      icon: '🛣️', arrow, dir: guessDir(leg),
+      text: `${leg.road}${dirWord ? ' ' + dirWord : ''}${leg.to ? ' → ' + leg.to : ''}`,
+      note: leg.raw || '',
+      dist: 0, permit: '', location: `${leg.state}`,
+      leg_ref: leg.seq,
+    });
+  });
+
+  // Final step: arrive at true destination (connector from permit end)
+  steps.push({
+    icon: '🏁', arrow: '🏁', dir: 'arrive',
+    text: `Arrive at ${route.dest_address}`,
+    note: `Auto-route from permit end: ${extraction.permit_end || 'last permit road'}`,
+    dist: 0, permit: 'Permit route complete', location: '',
+  });
+
+  return steps;
+}
+
+function guessDir(leg) {
+  const r = (leg.raw || '').toLowerCase();
+  if (r.includes('turn right') || r.includes('right onto')) return 'right';
+  if (r.includes('turn left')  || r.includes('left onto'))  return 'left';
+  if (r.includes('merge') || r.includes('ramp'))            return 'merge';
+  if (r.includes('exit'))                                    return 'exit';
+  return 'straight';
 }
 
 function makeAnthropicRequest(body) {
@@ -174,36 +212,30 @@ function makeAnthropicRequest(body) {
       path:     '/v1/messages',
       method:   'POST',
       headers: {
-        'Content-Type':      'application/json',
-        'x-api-key':          process.env.ANTHROPIC_API_KEY,
-        'anthropic-version':  '2023-06-01',
-        'Content-Length':     Buffer.byteLength(body),
+        'Content-Type':     'application/json',
+        'x-api-key':        process.env.ANTHROPIC_API_KEY,
+        'anthropic-version':'2023-06-01',
+        'Content-Length':   Buffer.byteLength(body),
       },
     };
-
     const req = https.request(options, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', c => data += c);
       res.on('end', () => {
         try {
           const parsed = JSON.parse(data);
-          if (parsed.error) {
-            reject(new Error(`Anthropic API error: ${parsed.error.message}`));
-          } else {
-            const text = parsed.content?.map(b => b.text || '').join('') || '';
-            resolve(text);
-          }
+          if (parsed.error) reject(new Error(`Anthropic API error: ${parsed.error.message}`));
+          else resolve(parsed.content?.map(b => b.text || '').join('') || '');
         } catch (e) {
           reject(new Error('Failed to parse Anthropic response: ' + e.message));
         }
       });
     });
-
     req.on('error', reject);
-    req.setTimeout(45000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
+    req.setTimeout(60000, () => { req.destroy(); reject(new Error('Anthropic API timeout')); });
     req.write(body);
     req.end();
   });
 }
 
-module.exports = { analyzePermitsWithAI };
+module.exports = { analyzePermitsWithAI, extractRouteLegs, extractPermitText };
